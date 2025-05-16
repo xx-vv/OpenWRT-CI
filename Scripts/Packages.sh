@@ -64,6 +64,8 @@ UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 
+
+UPDATE_PACKAGE "3ginfo" "4IceG/luci-app-3ginfo-lite" "main"
 UPDATE_PACKAGE "modemdefine" "4IceG/luci-app-modemdefine" "main"
 UPDATE_PACKAGE "adguardhome" "kenzok8/openwrt-packages" "master" "pkg"
 UPDATE_PACKAGE "lucky" "kenzok8/openwrt-packages" "master" "pkg"
