@@ -64,9 +64,20 @@ UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 
-if [[ $WRT_REPO != *"immortalwrt"* ]]; then
-	UPDATE_PACKAGE "qmi-wwan" "immortalwrt/wwan-packages" "master" "pkg"
-fi
+UPDATE_PACKAGE "modemdefine" "4IceG/luci-app-modemdefine" "main"
+UPDATE_PACKAGE "adguardhome" "kenzok8/openwrt-packages" "master" "pkg"
+UPDATE_PACKAGE "lucky" "kenzok8/openwrt-packages" "master" "pkg"
+UPDATE_PACKAGE "luci-app-advanced" "kenzok8/openwrt-packages" "master" "pkg"
+UPDATE_PACKAGE "luci-app-qosmate" "hudra0/luci-app-qosmate" "main"
+UPDATE_PACKAGE "qosmate" "hudra0/qosmate" "main"
+UPDATE_PACKAGE "quectel_cm_5G" "xx-vv/quectel_cm_5G" "main"
+UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
+UPDATE_PACKAGE "luci-app-partexp" "sirpdboy/luci-app-partexp" "main"
+
+
+#if [[ $WRT_REPO != *"immortalwrt"* ]]; then
+#	UPDATE_PACKAGE "qmi-wwan" "immortalwrt/wwan-packages" "master" "pkg"
+#fi
 
 #更新软件包版本
 UPDATE_VERSION() {
