@@ -44,9 +44,9 @@ jobs:
       #默认主题
       WRT_THEME: argon
       #默认主机名
-      WRT_NAME: OWRT
+      WRT_NAME: AX1800PRO
       #默认WIFI名称
-      WRT_SSID: OWRT
+      WRT_SSID: 亚瑟
       #默认WIFI密码
       WRT_WORD: zxcvbnm1234
       #默认地址
