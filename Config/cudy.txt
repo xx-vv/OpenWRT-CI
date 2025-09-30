@@ -1,6 +1,6 @@
 #设备平台
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
-
+#设备列表
 CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cudy_tr3000-256mb-v1=y
 CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cudy_tr3000-v1=y
