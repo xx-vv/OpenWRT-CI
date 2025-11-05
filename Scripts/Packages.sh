@@ -73,6 +73,7 @@ UPDATE_PACKAGE "quickfile" "sbwml/luci-app-quickfile" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 
+UPDATE_PACKAGE "luci-app-at-webserver" "inotdream/mt5700webui-openwrt-server" "main"
 UPDATE_PACKAGE "3ginfo" "xx-vv/luci-app-3ginfo-lite" "main"
 UPDATE_PACKAGE "modemdefine" "4IceG/luci-app-modemdefine" "main"
 UPDATE_PACKAGE "adguardhome" "kenzok8/openwrt-packages" "master" "pkg"
