@@ -1,5 +1,7 @@
 #科学插件调整
 CONFIG_PACKAGE_luci-app-nikki=y
+#5G插件
+CONFIG_PACKAGE_luci-app-at-webserver=y
 #增加插件
 CONFIG_PACKAGE_luci-app-onliner=y
 CONFIG_PACKAGE_luci-app-arpbind=y
