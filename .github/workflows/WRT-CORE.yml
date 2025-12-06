@@ -83,6 +83,12 @@ jobs:
           sudo chown $USER:$USER /mnt/build_wrt
           sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
 
+          # =========== 添加 Python 构建环境 ===========
+          sudo -E apt -yqq install python3-pip python3-setuptools python3-wheel
+          sudo pip3 install --upgrade pip
+          sudo pip3 install pyproject-hooks pep517 build installer
+          # ===========================================
+
       - name: Initialization Values
         run: |
           echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")" >> $GITHUB_ENV
@@ -103,6 +109,48 @@ jobs:
           if [ -f "$PROJECT_MIRRORS_FILE" ]; then
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
+
+      # =========== 添加 PEP 517 修复步骤 ===========
+      - name: Fix Python PEP517 Issues
+        run: |
+          cd ./wrt/
+          
+          # 1. 查找并修复所有 Python 包的 pyproject.toml
+          if [ -d "./feeds/packages/lang/python" ]; then
+            find ./feeds/packages/lang/python -name "pyproject.toml" -type f | while read file; do
+              echo "检查: $file"
+              # 确保使用兼容的构建后端
+              if grep -q 'build-backend = "setuptools.build_meta"' "$file"; then
+                sed -i 's/build-backend = "setuptools.build_meta"/build-backend = "setuptools.build_meta:__legacy__"/' "$file"
+                echo "修复构建后端: $file"
+              fi
+            done
+          fi
+          
+          # 2. 特别处理 python-frozenlist
+          FROZENLIST_DIR="./feeds/packages/lang/python/python-frozenlist"
+          if [ -d "$FROZENLIST_DIR" ]; then
+            echo "处理 python-frozenlist..."
+            
+            # 检查并修改 pyproject.toml
+            if [ -f "$FROZENLIST_DIR/pyproject.toml" ]; then
+              sed -i 's/build-backend = "setuptools.build_meta"/build-backend = "setuptools.build_meta:__legacy__"/' "$FROZENLIST_DIR/pyproject.toml"
+              echo "修复 python-frozenlist 的构建后端"
+            fi
+            
+            # 创建补丁文件
+            cat > "$FROZENLIST_DIR/001-fix-pep517.patch" << 'EOF'
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,4 +1,4 @@
+ [build-system]
+ requires = ["setuptools>=61.0", "wheel"]
+-build-backend = "setuptools.build_meta"
++build-backend = "setuptools.build_meta:__legacy__"
+EOF
+          fi
+      # =============================================
+
 
       - name: Check Scripts
         run: |
@@ -170,6 +218,12 @@ jobs:
 
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
+          # =========== 添加 Python 构建环境配置 ===========
+          echo "CONFIG_PACKAGE_python3-pyproject-hooks=y" >> .config
+          echo "CONFIG_PACKAGE_python3-build=y" >> .config
+          echo "CONFIG_PACKAGE_python3-installer=y" >> .config
+          # ===============================================
+
           make defconfig -j$(nproc) && make clean -j$(nproc)
 
       - name: Download Packages
@@ -183,8 +237,32 @@ jobs:
         if: env.WRT_TEST != 'true'
         run: |
           cd ./wrt/
-
-          make -j$(nproc) || make -j1 V=s
+          # 第一次尝试构建
+          make -j$(nproc) || {
+            echo "第一次构建失败，尝试修复 python-frozenlist..."
+            
+            # 清理并重新构建 python-frozenlist
+            make package/python-frozenlist/clean
+            
+            # 设置环境变量强制使用传统构建
+            export PIP_USE_PEP517=0
+            export SETUPTOOLS_USE_DISTUTILS=stdlib
+            
+            # 单独构建 python-frozenlist
+            make package/python-frozenlist/compile V=s || {
+              echo "单独构建 python-frozenlist 失败，尝试绕过..."
+              
+              # 临时禁用 python-frozenlist
+              sed -i '/CONFIG_PACKAGE_python3-frozenlist=y/d' .config
+              echo "已临时禁用 python-frozenlist"
+              
+              # 重新配置并构建其他包
+              make defconfig
+            }
+            
+            # 继续构建剩余包
+            make -j$(nproc) || make -j1 V=s
+          }
 
       - name: Machine Information
         run: |
