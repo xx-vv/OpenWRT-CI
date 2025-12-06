@@ -83,10 +83,38 @@ jobs:
           sudo chown $USER:$USER /mnt/build_wrt
           sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
 
-          # =========== 添加 Python 构建环境 ===========
-          sudo -E apt -yqq install python3-pip python3-setuptools python3-wheel
-          sudo pip3 install --upgrade pip
-          sudo pip3 install pyproject-hooks pep517 build installer
+          # =========== 修改这里：安装 Python 构建工具 ===========
+          # 先更新 apt 源
+          sudo apt-get update
+          
+          # 安装 Python 构建工具包
+          sudo apt-get install -y \
+              python3-pip \
+              python3-setuptools \
+              python3-wheel \
+              python3-build \
+              python3-installer \
+              python3-pyproject-hooks \
+              python3-pep517
+          
+          # 检查并修复 pip
+          if ! pip3 --version; then
+            echo "pip3 not found, reinstalling..."
+            sudo apt-get install --reinstall -y python3-pip
+          fi
+          
+          # 安装必要的 Python 构建模块（使用 --user 避免权限问题）
+          python3 -m pip install --user --upgrade \
+              setuptools \
+              wheel \
+              build \
+              installer \
+              pyproject-hooks \
+              pep517
+          
+          # 将用户安装的包路径添加到 PATH
+          echo "export PATH=\$HOME/.local/bin:\$PATH" >> ~/.bashrc
+          source ~/.bashrc
           # ===========================================
 
       - name: Initialization Values
