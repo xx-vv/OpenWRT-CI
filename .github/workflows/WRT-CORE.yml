@@ -135,46 +135,54 @@ jobs:
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
 
-      # =========== 添加 PEP 517 修复步骤 ===========
+      # 在 Clone Code 步骤后添加
       - name: Fix Python PEP517 Issues
         run: |
-          cd ./wrt/
+          echo "=== 修复 PEP517 问题 ==="
           
-          # 1. 查找并修复所有 Python 包的 pyproject.toml
-          if [ -d "./feeds/packages/lang/python" ]; then
-            find ./feeds/packages/lang/python -name "pyproject.toml" -type f | while read file; do
-              echo "检查: $file"
-              # 确保使用兼容的构建后端
-              if grep -q 'build-backend = "setuptools.build_meta"' "$file"; then
-                sed -i 's/build-backend = "setuptools.build_meta"/build-backend = "setuptools.build_meta:__legacy__"/' "$file"
-                echo "修复构建后端: $file"
-              fi
+          # 安装缺失的 Python 包
+          python3 -m pip install --user --upgrade \
+              pyproject_hooks \
+              pep517 \
+              setuptools \
+              wheel \
+              build \
+              installer
+          
+          # 直接使用 sed 命令修改 pyproject.toml
+          FROZENLIST_PYPROJECT="./wrt/feeds/packages/lang/python/python-frozenlist/pyproject.toml"
+          
+          if [ -f "$FROZENLIST_PYPROJECT" ]; then
+            echo "正在修改 $FROZENLIST_PYPROJECT"
+            
+            # 备份原文件
+            cp "$FROZENLIST_PYPROJECT" "${FROZENLIST_PYPROJECT}.backup"
+            
+            # 替换构建后端为兼容版本
+            sed -i 's/^build-backend = "setuptools\.build_meta"$/build-backend = "setuptools.build_meta:__legacy__"/g' "$FROZENLIST_PYPROJECT"
+            
+            # 确保 requires 包含必要的包
+            if grep -q '^requires = \["setuptools' "$FROZENLIST_PYPROJECT"; then
+              sed -i 's/^requires = \["setuptools"/requires = ["setuptools","wheel"/g' "$FROZENLIST_PYPROJECT"
+            fi
+            
+            echo "修改完成"
+            echo "修改后的文件内容:"
+            cat "$FROZENLIST_PYPROJECT"
+          else
+            echo "未找到 $FROZENLIST_PYPROJECT"
+            echo "尝试在其他位置查找..."
+            
+            # 在 feeds 目录中查找
+            find ./wrt/feeds -name "pyproject.toml" -type f | grep -i frozenlist | head -1 | while read file; do
+              echo "找到: $file"
+              cp "$file" "${file}.backup"
+              sed -i 's/^build-backend = "setuptools\.build_meta"$/build-backend = "setuptools.build_meta:__legacy__"/g' "$file"
+              echo "已修复: $file"
             done
           fi
           
-          # 2. 特别处理 python-frozenlist
-          FROZENLIST_DIR="./feeds/packages/lang/python/python-frozenlist"
-          if [ -d "$FROZENLIST_DIR" ]; then
-            echo "处理 python-frozenlist..."
-            
-            # 检查并修改 pyproject.toml
-            if [ -f "$FROZENLIST_DIR/pyproject.toml" ]; then
-              sed -i 's/build-backend = "setuptools.build_meta"/build-backend = "setuptools.build_meta:__legacy__"/' "$FROZENLIST_DIR/pyproject.toml"
-              echo "修复 python-frozenlist 的构建后端"
-            fi
-            
-            # 创建补丁文件
-            cat > "$FROZENLIST_DIR/001-fix-pep517.patch" << 'EOF'
---- a/pyproject.toml
-+++ b/pyproject.toml
-@@ -1,4 +1,4 @@
- [build-system]
- requires = ["setuptools>=61.0", "wheel"]
--build-backend = "setuptools.build_meta"
-+build-backend = "setuptools.build_meta:__legacy__"
-EOF
-          fi
-      # =============================================
+          echo "=== 修复完成 ==="
 
 
       - name: Check Scripts
