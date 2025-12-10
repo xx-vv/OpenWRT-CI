@@ -205,66 +205,64 @@ jobs:
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
 
-      # ▼▼▼ 新增步骤：修复python-frozenlist的构建命令 ▼▼▼
+      # ▼▼▼ 修复后的步骤：修复python-frozenlist的构建命令 ▼▼▼
       - name: Fix Python Frozenlist Build Issue
         run: |
           cd ./wrt/
           
           echo "=== 开始修复 python-frozenlist 构建问题 ==="
           
-          # 1. 定位Makefile文件 (优先尝试标准路径，失败则搜索)
+          # 1. 定位Makefile文件
           FROZENLIST_MAKEFILE="./feeds/packages/lang/python/python-frozenlist/Makefile"
+          echo "目标文件: $FROZENLIST_MAKEFILE"
+          
           if [ ! -f "$FROZENLIST_MAKEFILE" ]; then
-            echo "未在标准路径找到Makefile，开始搜索..."
-            ALT_PATH=$(find ./feeds -type f -path "*/python-frozenlist/Makefile" 2>/dev/null | head -1)
+            echo "❌ 错误：未找到 $FROZENLIST_MAKEFILE"
+            echo "尝试搜索替代路径..."
+            ALT_PATH=$(find ./feeds -type f -name "Makefile" 2>/dev/null | xargs grep -l "frozenlist" 2>/dev/null | head -1)
             if [ -n "$ALT_PATH" ]; then
               FROZENLIST_MAKEFILE="$ALT_PATH"
               echo "在备用路径找到: $FROZENLIST_MAKEFILE"
             else
-              echo "❌ 错误：无法找到 python-frozenlist 的 Makefile。"
-              echo "当前 feeds 目录结构:"
-              find ./feeds/packages -name "*frozenlist*" -type d 2>/dev/null || true
-              exit 1
+              echo "无法找到 python-frozenlist 的 Makefile，跳过修复。"
+              exit 0  # 退出但不失败，让编译继续
             fi
           fi
           
-          echo "目标文件: $FROZENLIST_MAKEFILE"
-          
-          # 2. 备份原文件（带时间戳，便于追溯）
+          # 2. 备份原文件
           BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           BACKUP_FILE="${FROZENLIST_MAKEFILE}.backup.${BACKUP_TIMESTAMP}"
-          cp "$FROZENLIST_MAKEFILE" "$BACKUP_FILE"
+          cp -f "$FROZENLIST_MAKEFILE" "$BACKUP_FILE"
           echo "已备份原文件至: $BACKUP_FILE"
           
           # 3. 核心修复：移除 `--no-isolation` 参数
           echo "正在执行修复：从构建命令中移除 '--no-isolation'..."
           
-          # 方案：使用 sed 查找并删除构建命令中的 --no-isolation 参数
-          # 注意保留行首的缩进（通常是制表符\t）
-          sed -i '/^[[:space:]]*.*-m build/s/--no-isolation[[:space:]]*//g' "$FROZENLIST_MAKEFILE"
+          # 使用更稳健的sed命令，避免使用复杂的正则表达式
+          sed -i 's/--no-isolation //g' "$FROZENLIST_MAKEFILE"
           
-          # 4. 验证修改
+          # 4. 验证修改（使用简单可靠的grep命令）
           echo "=== 验证修改结果 ==="
-          MODIFIED_LINES=$(grep -n "-m build" "$FROZENLIST_MAKEFILE")
           
-          if [ -z "$MODIFIED_LINES" ]; then
-            echo "⚠️  警告：未找到包含 '-m build' 的命令行。"
+          # 检查文件中是否包含构建命令
+          if grep -q "-m build" "$FROZENLIST_MAKEFILE"; then
+            echo "✅ 找到构建命令。"
+            echo "构建命令预览:"
+            grep "-m build" "$FROZENLIST_MAKEFILE" | head -2 | sed 's/^/  /'
           else
-            echo "修改后的构建命令："
-            echo "$MODIFIED_LINES" | while IFS= read -r line; do
-              echo "  $line"
-            done
-            
-            # 检查是否还有残留的 --no-isolation
-            if grep -q "no-isolation" "$FROZENLIST_MAKEFILE"; then
-              echo "❌ 修复可能不彻底，文件中仍包含 'no-isolation' 字样。"
-            else
-              echo "✅ 修复完成，已成功移除 '--no-isolation' 参数。"
-            fi
+            echo "⚠️  警告：未找到包含 '-m build' 的命令行。"
           fi
           
-          echo "=== 修复步骤结束 ==="
-      # ▲▲▲ 新增步骤结束 ▲▲▲
+          # 检查是否还有残留的 --no-isolation
+          if grep -q "no-isolation" "$FROZENLIST_MAKEFILE"; then
+            echo "❌ 修复可能不彻底，文件中仍包含 'no-isolation' 字样。"
+          else
+            echo "✅ 修复完成，已成功移除 '--no-isolation' 参数。"
+          fi
+          
+          echo -e "\n=== 修复步骤完成 ==="
+      # ▲▲▲ 修复后的步骤结束 ▲▲▲
+
 
       - name: Download Packages
         if: env.WRT_TEST != 'true'
