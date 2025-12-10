@@ -152,6 +152,38 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      # ▼▼▼ 新增步骤：安装Python构建依赖 ▼▼▼
+      - name: Install Python Build Tools
+        run: |
+          cd ./wrt/
+          
+          echo "=== 检查构建环境 ==="
+          ls -la ./staging_dir/ || echo "staging_dir目录尚未生成"
+          
+          # 如果hostpkg目录已存在，安装Python构建工具
+          if [ -d "./staging_dir/hostpkg" ]; then
+            echo "=== 安装Python构建工具到构建环境 ==="
+            ./staging_dir/hostpkg/bin/pip install --upgrade pip setuptools wheel build pyproject-hooks
+            echo "=== 验证安装 ==="
+            ./staging_dir/hostpkg/bin/python3 -c "import pyproject_hooks, build, setuptools; print('✅ 关键Python构建模块导入成功')"
+          else
+            echo "=== 初始化构建工具链 ==="
+            # 如果hostpkg不存在，先构建基本工具链
+            make tools/install -j$(nproc) || echo "工具链构建开始..."
+            # 等待片刻后重试安装
+            sleep 10
+            if [ -d "./staging_dir/hostpkg" ]; then
+              ./staging_dir/hostpkg/bin/pip install --upgrade pip setuptools wheel build pyproject-hooks
+            else
+              echo "⚠️  hostpkg目录仍未就绪，将继续后续步骤"
+            fi
+          fi
+          
+          # 同时确保系统Python也有基本工具（作为备用）
+          echo "=== 确保系统Python工具 ==="
+          python3 -m pip install --upgrade pip setuptools wheel pyproject-hooks || true
+      # ▲▲▲ 新增步骤结束 ▲▲▲
+
       - name: Custom Packages
         run: |
           cd ./wrt/package/
