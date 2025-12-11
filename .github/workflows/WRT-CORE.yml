@@ -1,4 +1,3 @@
-
 #云编译公用核心
 name: WRT-CORE
 
@@ -152,38 +151,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # ▼▼▼ 新增步骤：安装Python构建依赖 ▼▼▼
-      - name: Install Python Build Tools
-        run: |
-          cd ./wrt/
-          
-          echo "=== 检查构建环境 ==="
-          ls -la ./staging_dir/ || echo "staging_dir目录尚未生成"
-          
-          # 如果hostpkg目录已存在，安装Python构建工具
-          if [ -d "./staging_dir/hostpkg" ]; then
-            echo "=== 安装Python构建工具到构建环境 ==="
-            ./staging_dir/hostpkg/bin/pip install --upgrade pip setuptools wheel build pyproject-hooks
-            echo "=== 验证安装 ==="
-            ./staging_dir/hostpkg/bin/python3 -c "import pyproject_hooks, build, setuptools; print('✅ 关键Python构建模块导入成功')"
-          else
-            echo "=== 初始化构建工具链 ==="
-            # 如果hostpkg不存在，先构建基本工具链
-            make tools/install -j$(nproc) || echo "工具链构建开始..."
-            # 等待片刻后重试安装
-            sleep 10
-            if [ -d "./staging_dir/hostpkg" ]; then
-              ./staging_dir/hostpkg/bin/pip install --upgrade pip setuptools wheel build pyproject-hooks
-            else
-              echo "⚠️  hostpkg目录仍未就绪，将继续后续步骤"
-            fi
-          fi
-          
-          # 同时确保系统Python也有基本工具（作为备用）
-          echo "=== 确保系统Python工具 ==="
-          python3 -m pip install --upgrade pip setuptools wheel pyproject-hooks || true
-      # ▲▲▲ 新增步骤结束 ▲▲▲
-
       - name: Custom Packages
         run: |
           cd ./wrt/package/
@@ -204,65 +171,6 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
-
-      # ▼▼▼ 修复后的步骤：修复python-frozenlist的构建命令 ▼▼▼
-      - name: Fix Python Frozenlist Build Issue
-        run: |
-          cd ./wrt/
-          
-          echo "=== 开始修复 python-frozenlist 构建问题 ==="
-          
-          # 1. 定位Makefile文件
-          FROZENLIST_MAKEFILE="./feeds/packages/lang/python/python-frozenlist/Makefile"
-          echo "目标文件: $FROZENLIST_MAKEFILE"
-          
-          if [ ! -f "$FROZENLIST_MAKEFILE" ]; then
-            echo "❌ 错误：未找到 $FROZENLIST_MAKEFILE"
-            echo "尝试搜索替代路径..."
-            ALT_PATH=$(find ./feeds -type f -name "Makefile" 2>/dev/null | xargs grep -l "frozenlist" 2>/dev/null | head -1)
-            if [ -n "$ALT_PATH" ]; then
-              FROZENLIST_MAKEFILE="$ALT_PATH"
-              echo "在备用路径找到: $FROZENLIST_MAKEFILE"
-            else
-              echo "无法找到 python-frozenlist 的 Makefile，跳过修复。"
-              exit 0  # 退出但不失败，让编译继续
-            fi
-          fi
-          
-          # 2. 备份原文件
-          BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          BACKUP_FILE="${FROZENLIST_MAKEFILE}.backup.${BACKUP_TIMESTAMP}"
-          cp -f "$FROZENLIST_MAKEFILE" "$BACKUP_FILE"
-          echo "已备份原文件至: $BACKUP_FILE"
-          
-          # 3. 核心修复：移除 `--no-isolation` 参数
-          echo "正在执行修复：从构建命令中移除 '--no-isolation'..."
-          
-          # 使用更稳健的sed命令，避免使用复杂的正则表达式
-          sed -i 's/--no-isolation //g' "$FROZENLIST_MAKEFILE"
-          
-          # 4. 验证修改（使用简单可靠的grep命令）
-          echo "=== 验证修改结果 ==="
-          
-          # 检查文件中是否包含构建命令
-          if grep -q "-m build" "$FROZENLIST_MAKEFILE"; then
-            echo "✅ 找到构建命令。"
-            echo "构建命令预览:"
-            grep "-m build" "$FROZENLIST_MAKEFILE" | head -2 | sed 's/^/  /'
-          else
-            echo "⚠️  警告：未找到包含 '-m build' 的命令行。"
-          fi
-          
-          # 检查是否还有残留的 --no-isolation
-          if grep -q "no-isolation" "$FROZENLIST_MAKEFILE"; then
-            echo "❌ 修复可能不彻底，文件中仍包含 'no-isolation' 字样。"
-          else
-            echo "✅ 修复完成，已成功移除 '--no-isolation' 参数。"
-          fi
-          
-          echo -e "\n=== 修复步骤完成 ==="
-      # ▲▲▲ 修复后的步骤结束 ▲▲▲
-
 
       - name: Download Packages
         if: env.WRT_TEST != 'true'
