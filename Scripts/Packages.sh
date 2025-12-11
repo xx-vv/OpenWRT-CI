@@ -80,6 +80,11 @@ UPDATE_PACKAGE "mt5700webui" "inotdream/mt5700webui-openwrt-server" "main"
 UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
 UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
 UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf"
+UPDATE_PACKAGE "luci-app-fan" "xx-vv/luci-app-fan" "main"
+UPDATE_PACKAGE "istore" "linkease/istore" "main"
+UPDATE_PACKAGE "istore-luci" "linkease/nas-packages-luci" "main"
+UPDATE_PACKAGE "istore-packages" "linkease/nas-packages" "main"
+
 
 #更新软件包版本
 UPDATE_VERSION() {
