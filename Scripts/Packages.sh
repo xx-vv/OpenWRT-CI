@@ -76,6 +76,7 @@ UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 
 UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
 UPDATE_PACKAGE "mt5700webui" "inotdream/mt5700webui-openwrt-server" "main"
+UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
 UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
 UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf"
 
