@@ -83,7 +83,7 @@ UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-
 UPDATE_PACKAGE "luci-app-fan" "xx-vv/luci-app-fan" "main"
 UPDATE_PACKAGE "istore" "linkease/istore" "main"
 UPDATE_PACKAGE "nas-packages" "linkease/nas-packages" "master"
-UPDATE_PACKAGE "nas-packages-luci" "linkease/nas-packages-luci" "main"
+UPDATE_PACKAGE "nas-packages-luci" "xx-vv/nas-packages-luci" "main"
 
 
 
