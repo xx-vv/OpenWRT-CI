@@ -81,10 +81,11 @@ UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
 UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
 UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf"
 UPDATE_PACKAGE "luci-app-fan" "xx-vv/luci-app-fan" "main"
-UPDATE_PACKAGE "istore" "linkease/istore" "main"
-UPDATE_PACKAGE "nas-packages" "linkease/nas-packages" "master"
-UPDATE_PACKAGE "nas-packages-luci" "xx-vv/nas-packages-luci" "main"
-
+#UPDATE_PACKAGE "istore" "linkease/istore" "main"
+#UPDATE_PACKAGE "nas-packages" "linkease/nas-packages" "master"
+#UPDATE_PACKAGE "nas-packages-luci" "xx-vv/nas-packages-luci" "main"
+UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
+UPDATE_PACKAGE "xgp-v3-screen" "zzzz0317/xgp-v3-screen" "main"
 
 
 #更新软件包版本
