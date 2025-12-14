@@ -86,7 +86,7 @@ UPDATE_PACKAGE "luci-app-fan" "xx-vv/luci-app-fan" "main"
 #UPDATE_PACKAGE "nas-packages-luci" "xx-vv/nas-packages-luci" "main"
 UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
 UPDATE_PACKAGE "xgp-v3-screen" "zzzz0317/xgp-v3-screen" "main"
-
+UPDATE_PACKAGE "argon" "jerrykuku/luci-theme-argon" "master"
 
 #更新软件包版本
 UPDATE_VERSION() {
