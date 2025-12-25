@@ -36,13 +36,13 @@ jobs:
         SOURCE: [coolsnowwolf/lede]
         BRANCH: [master]
 
-    #调用公用编译核心WRT-CORE.yml
-    uses: ./.github/workflows/WRT-CORE.yml
+    #调用公用编译核心WRT-CORE-LEDE.yml
+    uses: ./.github/workflows/WRT-CORE-LEDE.yml
     with:
       #编译配置
       WRT_CONFIG: ${{matrix.CONFIG}}
       #默认主题
-      WRT_THEME: argon
+      WRT_THEME: design
       #默认主机名
       WRT_NAME: Cudy
       #默认WIFI名称
