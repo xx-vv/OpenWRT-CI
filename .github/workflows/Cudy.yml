@@ -33,16 +33,16 @@ jobs:
       #max-parallel: 3
       matrix:
         CONFIG: [MEDIATEK]
-        SOURCE: [coolsnowwolf/lede]
+        SOURCE: [immortalwrt/immortalwrt]
         BRANCH: [master]
 
-    #调用公用编译核心WRT-CORE-LEDE.yml
-    uses: ./.github/workflows/WRT-CORE-LEDE.yml
+    #调用公用编译核心WRT-CORE.yml
+    uses: ./.github/workflows/WRT-CORE.yml
     with:
       #编译配置
       WRT_CONFIG: ${{matrix.CONFIG}}
       #默认主题
-      WRT_THEME: design
+      WRT_THEME: argon
       #默认主机名
       WRT_NAME: Cudy
       #默认WIFI名称
