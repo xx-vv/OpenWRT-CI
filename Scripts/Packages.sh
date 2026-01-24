@@ -61,7 +61,7 @@ UPDATE_PACKAGE "passwall2" "Openwrt-Passwall/openwrt-passwall2" "main" "pkg"
 UPDATE_PACKAGE "luci-app-tailscale" "asvow/luci-app-tailscale" "main"
 
 UPDATE_PACKAGE "ddns-go" "sirpdboy/luci-app-ddns-go" "main"
-UPDATE_PACKAGE "diskman" "lisaac/luci-app-diskman" "master"
+# UPDATE_PACKAGE "diskman" "lisaac/luci-app-diskman" "master"
 UPDATE_PACKAGE "easytier" "EasyTier/luci-app-easytier" "main"
 UPDATE_PACKAGE "fancontrol" "rockjake/luci-app-fancontrol" "main"
 UPDATE_PACKAGE "gecoosac" "lwb1978/openwrt-gecoosac" "main"
@@ -74,6 +74,19 @@ UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "quickfile" "sbwml/luci-app-quickfile" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "luci-app-timewol luci-app-wolplus"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
+
+UPDATE_PACKAGE "luci-app-3ginfo-lite" "4IceG/luci-app-3ginfo-lite" "main"
+UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
+UPDATE_PACKAGE "mt5700webui" "inotdream/mt5700webui-openwrt-server" "main"
+UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
+UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
+UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf"
+UPDATE_PACKAGE "luci-app-fan" "xx-vv/luci-app-fan" "main"
+#UPDATE_PACKAGE "istore" "linkease/istore" "main"
+#UPDATE_PACKAGE "nas-packages" "linkease/nas-packages" "master"
+#UPDATE_PACKAGE "nas-packages-luci" "xx-vv/nas-packages-luci" "main"
+UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
+UPDATE_PACKAGE "xgp-v3-screen" "junhong-l/xgp-v3-screen" "main"
 
 #更新软件包版本
 UPDATE_VERSION() {
