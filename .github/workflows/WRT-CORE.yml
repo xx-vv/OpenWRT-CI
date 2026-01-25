@@ -89,7 +89,7 @@ jobs:
             upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
           
           # 安装一些额外的常用包
-          sudo apt install -y libncursesw5-dev libssl-dev python2.7-dev python3-dev python3-setuptools \
+          sudo apt install -y libncursesw5-dev libssl-dev python3-dev python3-setuptools \
             python3-distutils python3-venv python3-wheel
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
