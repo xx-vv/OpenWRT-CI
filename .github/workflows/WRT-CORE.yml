@@ -90,7 +90,7 @@ jobs:
           
           # 安装一些额外的常用包
           sudo apt install -y libncursesw5-dev libssl-dev python3-dev python3-setuptools \
-            python3-distutils python3-venv python3-wheel
+            python3-venv python3-wheel
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
