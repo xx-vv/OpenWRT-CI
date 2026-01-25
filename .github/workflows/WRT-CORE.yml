@@ -74,7 +74,7 @@ jobs:
           sudo -E apt -yqq autoremove --purge
           sudo -E apt -yqq autoclean
           sudo -E apt -yqq clean
-          sudo -E apt -yqq install dos2unix python3-netifaces libfuse-dev libdeflate
+          sudo -E apt -yqq install dos2unix python3-netifaces libfuse-dev
           
           # 替换 ImmortalWrt 的初始化脚本，直接安装所需的软件包
           sudo -E apt update -y
@@ -87,7 +87,7 @@ jobs:
             libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf \
             python3 python3-pip python3-ply python3-docutils python3-pyelftools python3-setuptools qemu-utils \
             re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd \
-            zlib1g-dev zstd genisoimage
+            zlib1g-dev genisoimage
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
