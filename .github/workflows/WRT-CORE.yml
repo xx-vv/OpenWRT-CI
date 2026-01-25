@@ -74,7 +74,7 @@ jobs:
           sudo -E apt -yqq autoremove --purge
           sudo -E apt -yqq autoclean
           sudo -E apt -yqq clean
-          sudo -E apt -yqq install dos2unix python3-netifaces libfuse-dev
+          sudo -E apt -yqq install dos2unix python3-netifaces libfuse-dev libdeflate
           
           # 替换 ImmortalWrt 的初始化脚本，直接安装所需的软件包
           sudo -E apt update -y
