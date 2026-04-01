@@ -44,7 +44,7 @@ jobs:
       #默认主题
       WRT_THEME: argon
       #默认主机名
-      WRT_NAME: GL-MT3600be
+      WRT_NAME: MT3600be
       #默认WIFI名称
       WRT_SSID: gl-mt3600be
       #默认WIFI密码
