@@ -64,6 +64,8 @@ CONFIG_TARGET_ROOTFS_EXT4FS=n
 #西瓜皮v3屏幕驱动
 CONFIG_PACKAGE_xgp-v3-screen=y
 CONFIG_PACKAGE_kmod-fb-tft-gc9307=y
+#额外插件
+CONFIG_PACKAGE_luci-app-cpufreq=y
 #5G插件
 #CONFIG_PACKAGE_luci-app-modemdata=y
 CONFIG_PACKAGE_luci-app-3ginfo-lite=y
