@@ -4,6 +4,9 @@ CONFIG_TARGET_mediatek_filogic=y
 #设备列表
 CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cudy_tr3000-v1=y
 CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cudy_tr3000-v1-256mb=y
+#内核调整
+CONFIG_PACKAGE_kmod-cryptodev=y
+CONFIG_PACKAGE_kmod-tls=y
 #无线插件
 CONFIG_PACKAGE_wpad-openssl=y
 CONFIG_PACKAGE_wpa-cli=y
