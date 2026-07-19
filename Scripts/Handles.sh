@@ -200,15 +200,15 @@ if [ -n "$HP_DIR" ]; then
 fi
 
 #修改argon主题字体和颜色
-if [ -d "$PKG_PATH/luci-theme-argon" ]; then
-	echo " "
-	if sed -i "s/primary '.*'/primary '#31a1a1'/; s/'0.2'/'0.5'/; s/'none'/'bing'/; s/'600'/'normal'/" \
-		"$PKG_PATH/luci-theme-argon/luci-app-argon-config/root/etc/config/argon"; then
-		echo "theme-argon has been fixed!"
-	else
-		echo "theme-argon fix failed; continuing!"
-	fi
-fi
+#if [ -d "$PKG_PATH/luci-theme-argon" ]; then
+#	echo " "
+#	if sed -i "s/primary '.*'/primary '#31a1a1'/; s/'0.2'/'0.5'/; s/'none'/'bing'/; s/'600'/'normal'/" \
+#		"$PKG_PATH/luci-theme-argon/luci-app-argon-config/root/etc/config/argon"; then
+#		echo "theme-argon has been fixed!"
+#	else
+#		echo "theme-argon fix failed; continuing!"
+#	fi
+#fi
 
 #修改aurora菜单式样
 if [ -d "$PKG_PATH/luci-app-aurora-config" ]; then
