@@ -47,7 +47,7 @@ UPDATE_PACKAGE() {
 # UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf" 这样会把原有的open-app-filter，luci-app-appfilter，oaf相关组件删除，不会出现coremark错误。
 
 # UPDATE_PACKAGE "包名" "项目地址" "项目分支" "pkg/name，可选，pkg为从大杂烩中单独提取包名插件；name为重命名为包名"
-UPDATE_PACKAGE "argon" "sbwml/luci-theme-argon" "openwrt-25.12"
+UPDATE_PACKAGE "argon" "xx-vv/luci-theme-argon" "openwrt-25.12"
 UPDATE_PACKAGE "aurora" "eamonxg/luci-theme-aurora" "master"
 UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
 UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "master"
@@ -80,6 +80,16 @@ UPDATE_PACKAGE "quickfile" "sbwml/luci-app-quickfile" "main"
 UPDATE_PACKAGE "timecontrol" "sirpdboy/luci-app-timecontrol" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "axonhub gecoosac sing-box luci-app-homeproxy luci-app-timewol luci-app-wolplus luci-app-wolultra"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
+
+#UPDATE_PACKAGE "luci-app-3ginfo-lite" "4IceG/luci-app-3ginfo-lite" "main"
+UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
+UPDATE_PACKAGE "mt5700webui" "shi-an/mt5700webui-openwrt-server" "main"
+UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
+UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
+#UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
+UPDATE_PACKAGE "xgp-v3-screen" "junhong-l/xgp-v3-screen" "main"
+UPDATE_PACKAGE "proton2025" "ChesterGoodiny/luci-theme-proton2025" "main"
+UPDATE_PACKAGE "footstrap" "VizzleTF/luci-theme-footstrap" "main"
 
 #更新软件包版本
 UPDATE_VERSION() {
