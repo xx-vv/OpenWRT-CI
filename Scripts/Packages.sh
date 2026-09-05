@@ -82,6 +82,16 @@ UPDATE_PACKAGE "airpi3000m" "LianXia233/luci-app-airpi3000m-fancontrol" "main"
 UPDATE_PACKAGE "h5000m" "LianXia233/luci-app-h5000m-netmode" "main"
 UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 
+#UPDATE_PACKAGE "luci-app-3ginfo-lite" "4IceG/luci-app-3ginfo-lite" "main"
+UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
+UPDATE_PACKAGE "mt5700webui" "shi-an/mt5700webui-openwrt-server" "main"
+UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
+UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
+#UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
+UPDATE_PACKAGE "xgp-v3-screen" "junhong-l/xgp-v3-screen" "main"
+UPDATE_PACKAGE "proton2025" "ChesterGoodiny/luci-theme-proton2025" "main"
+UPDATE_PACKAGE "footstrap" "VizzleTF/luci-theme-footstrap" "main"
+
 #更新软件包版本
 UPDATE_VERSION() {
 	local PKG_NAME=$1
