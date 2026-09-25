@@ -94,7 +94,7 @@ UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 
 #UPDATE_PACKAGE "luci-app-3ginfo-lite" "4IceG/luci-app-3ginfo-lite" "main"
 UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
-UPDATE_PACKAGE "mt5700webui" "shi-an/mt5700webui-openwrt-server" "main"
+UPDATE_PACKAGE "mt5700webui" "inotdream/mt5700webui-openwrt-server" "feat/go-backend"
 UPDATE_PACKAGE "modemdata" "obsy/modemdata" "main"
 UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
 #UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
