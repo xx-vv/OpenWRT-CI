@@ -100,7 +100,6 @@ UPDATE_PACKAGE "luci-app-modemdata" "4IceG/luci-app-modemdata" "main"
 #UPDATE_PACKAGE "packges-gc9307" "zzzz0317/kmod-fb-tft-gc9307" "main"
 UPDATE_PACKAGE "xgp-v3-screen" "junhong-l/xgp-v3-screen" "main"
 UPDATE_PACKAGE "proton2025" "ChesterGoodiny/luci-theme-proton2025" "main"
-UPDATE_PACKAGE "footstrap" "VizzleTF/luci-theme-footstrap" "main"
 
 #更新软件包版本
 UPDATE_VERSION() {
