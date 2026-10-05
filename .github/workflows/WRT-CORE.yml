@@ -90,6 +90,14 @@ jobs:
           sudo chown $USER:$USER /mnt/build_wrt
           sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
 
+      - name: Install Rust Toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-musl
+          rustc --version && cargo --version
+
       - name: Initialization Values
         id: initialize-values
         run: |
@@ -184,6 +192,24 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
+
+      - name: Configure Cargo Cross Linker
+        run: |
+          cd ./wrt/
+          TOOLCHAIN_DIR=$(find staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -1)
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "ERROR: toolchain not found, retry after download"
+            exit 1
+          fi
+          TOOLCHAIN_BIN="$PWD/$TOOLCHAIN_DIR/bin"
+          echo "toolchain: $TOOLCHAIN_BIN"
+
+          mkdir -p $HOME/.cargo
+          cat >> $HOME/.cargo/config.toml <<EOF
+          [target.aarch64-unknown-linux-musl]
+          linker = "$TOOLCHAIN_BIN/aarch64-openwrt-linux-musl-gcc"
+          EOF
+          cat $HOME/.cargo/config.toml
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
