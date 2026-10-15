@@ -27,7 +27,7 @@ CONFIG_PACKAGE_input-support=y
 # QMI 驱动 choice 符号挂在 qmodem 主包上（旧名 luci-app-qmodem_INCLUDE_* 无效，会被
 # defconfig 静默丢弃、choice 落到上游默认 vendor）。显式选通用 QMI，与 GENERAL.txt 中
 # 启用的 kmod-usb-net-qmi-wwan 保持一致，厂商 qmi_wwan_q/f/s 驱动不进固件。
-CONFIG_PACKAGE_qmodem_INCLUDE_generic-qmi-wwan=y
-CONFIG_PACKAGE_qmodem_INCLUDE_SEAL=y
+#CONFIG_PACKAGE_qmodem_INCLUDE_generic-qmi-wwan=y
+#CONFIG_PACKAGE_qmodem_INCLUDE_SEAL=y
 # qmodem-smsd 由 luci-app-qmodem-next 的 DEPENDS 自动拉入，无需显式声明
 
