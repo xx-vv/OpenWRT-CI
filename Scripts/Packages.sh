@@ -156,26 +156,11 @@ FIX_QMODEM_VERSION() {
 }
 FIX_QMODEM_VERSION
 
-# QModem 上游 2026-09-11 提交 86102c2a6f（"integrate independent SIP SMS and VoIP
-# services"）给 sms-forwarder-next 的 DEPENDS 追加了 +qmodem-sipd，形成依赖链
-# luci-app-qmodem-next → sms-forwarder-next → qmodem-sipd → qmodem-voip →
-# libwebsockets-mbedtls；而 ttyd 依赖 libwebsockets-full，两个 libwebsockets
-# 变体互斥（均提供 libwebsockets=4.5.8-r1 并互设 CONFLICTS），导致 rootfs 组装
-# 阶段 apk 报 "unable to select packages"，-next 变体全部编译失败。
-# 这里在克隆后把 +qmodem-sipd 从 sms-forwarder-next 的 DEPENDS 中摘除：
-# SMS 转发（ServerChan / Webhook / 自定义脚本）不受影响，仅去掉依赖 VoIP 栈的
-# SIP MESSAGE 通道。若上游调整依赖后已不含 +qmodem-sipd，自动跳过。
-FIX_QMODEM_VOIP_DEP() {
-	local SFN_FILE="../QModem/application/sms_forwarder_next/Makefile"
-	[ -f "$SFN_FILE" ] || { echo "qmodem: sms_forwarder_next/Makefile not found, skip"; return 0; }
-	if grep -q '+qmodem-sipd' "$SFN_FILE"; then
-		sed -i 's/ +qmodem-sipd//' "$SFN_FILE"
-		echo "qmodem: removed +qmodem-sipd from sms-forwarder-next DEPENDS (libwebsockets variant conflict workaround)"
-	else
-		echo "qmodem: sms-forwarder-next DEPENDS already clean, no change"
-	fi
-}
-FIX_QMODEM_VOIP_DEP
+# 注：上游曾把 +qmodem-sipd 追加进 sms-forwarder-next 的 DEPENDS，与 ttyd 的
+# libwebsockets-full 互斥导致 -next 变体 rootfs 组装失败；上游现已将其降级为
+# PKG_RECOMMENDS（apk rootfs 组装不安装 RECOMMENDS，NEXT manifest 无 qmodem-sipd），
+# 冲突自上游侧消解，此处不再需要补丁脚本。FIX_QMODEM_VERSION 保留作为上游版本
+# 格式回退（-rc.N）时的构建保护。
 
 #更新软件包版本
 UPDATE_VERSION() {
