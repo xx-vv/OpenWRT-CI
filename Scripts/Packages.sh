@@ -108,29 +108,33 @@ UPDATE_PACKAGE "proton2025" "ChesterGoodiny/luci-theme-proton2025" "main"
 # 本地 feed，scripts/feeds 会递归扫描二级目录并把各包链接到 package/feeds/qmodem/ 下。
 # feeds 目录在 WRT-CORE 的 Update Feeds 步骤已就绪，此处仅增量处理 qmodem feed。
 REGISTER_QMODEM_FEED() {
-	# 先把克隆目录移出 package/：否则 package/ 主扫描会提前命中 QModem 二级目录里的
-	# Makefile（application/*、luci/*），把 luci-app-qmodem / qmodem 等注册为 core
-	# package，feeds install 时 "Not overriding core package" 直接跳过链接，配置符号
-	# 在 defconfig 阶段又被静默丢弃，LuCI 前端依旧进不了固件。
-	if [ -d "./package/QModem" ] && [ ! -d "../QModem" ]; then
-		mv -f ./package/QModem ../QModem
-		echo "qmodem: 克隆目录已移出 package/ 至 ../QModem"
+	# 定义存放路径为 GitHub 工作区根目录（权限充足，且不在 wrt/ 内）
+	local QMODEM_TARGET="$GITHUB_WORKSPACE/QModem"
+
+	# 先把克隆目录移出 package/ 到工作区根目录
+	if [ -d "./package/QModem" ] && [ ! -d "$QMODEM_TARGET" ]; then
+		if mv -f ./package/QModem "$QMODEM_TARGET"; then
+			echo "qmodem: 克隆目录已移出 package/ 至 $QMODEM_TARGET"
+		else
+			echo "qmodem: 移动目录失败，中止 feed 注册"
+			return 1
+		fi
 	fi
-	local QMODEM_DIR="../QModem"
-	[ -d "$QMODEM_DIR" ] || { echo "qmodem: 克隆目录不存在，跳过 feed 注册"; return 1; }
+
+	# 检查是否成功移动
+	[ -d "$QMODEM_TARGET" ] || { echo "qmodem: 克隆目录不存在，跳过 feed 注册"; return 1; }
 
 	# scripts/feeds 的解析顺序：feeds.conf 存在则完全替代 feeds.conf.default
-	local FEEDS_CONF="../feeds.conf"
-	[ -f "$FEEDS_CONF" ] || FEEDS_CONF="../feeds.conf.default"
+	local FEEDS_CONF="./feeds.conf"
+	[ -f "$FEEDS_CONF" ] || FEEDS_CONF="./feeds.conf.default"
 
 	# src-link 的目标按原样传给 ln -s，必须用绝对路径
-	local QMODEM_ABS="$(cd ../QModem && pwd)"
 	if ! grep -q "^src-link qmodem " "$FEEDS_CONF" 2>/dev/null; then
-		echo "src-link qmodem $QMODEM_ABS" >> "$FEEDS_CONF"
+		echo "src-link qmodem $QMODEM_TARGET" >> "$FEEDS_CONF"
 	fi
 
 	# src-link 的 update 为空操作，只会创建 feeds/qmodem -> 克隆目录 的链接
-	if ! ( cd .. && ./scripts/feeds update qmodem && ./scripts/feeds install -a -p qmodem ); then
+	if ! ./scripts/feeds update qmodem || ! ./scripts/feeds install -a -p qmodem; then
 		echo "qmodem: feed 注册失败，固件将不含 qmodem 包"
 		return 1
 	fi
@@ -138,14 +142,9 @@ REGISTER_QMODEM_FEED() {
 }
 REGISTER_QMODEM_FEED
 
-# QModem 包共用 version.mk 的 QMODEM_VERSION（当前上游发布 "3.4.0-rc.3"）。
-# OpenWrt 新版 apk 打包器不接受 `-rc.N`：版本串被拼成 "3.4.0-rc.3-rN" 后，
-# apk mkpkg 报 "package version is invalid"（Error 99），阻断整个固件构建
-# （libqmodem-sms / sms-tool_q 今日 6 job 全灭即此因）。这里在克隆后把
-# X.Y.Z-rc.N 改写为 apk 合法的 X.Y.Z_rcN；QModem 各包源码均内嵌仓库 src/，
-# 无版本化下载依赖，改写只影响包版本元数据。若上游已改为合法版本，自动跳过。
+# 同步修改版本号修复函数的路径
 FIX_QMODEM_VERSION() {
-	local VER_FILE="../QModem/version.mk"
+	local VER_FILE="$GITHUB_WORKSPACE/QModem/version.mk"
 	[ -f "$VER_FILE" ] || { echo "qmodem: version.mk not found, skip"; return 0; }
 	if grep -qE '^QMODEM_VERSION:=[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' "$VER_FILE"; then
 		sed -i -E 's/^(QMODEM_VERSION:=)([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$/\1\2_rc\3/' "$VER_FILE"
