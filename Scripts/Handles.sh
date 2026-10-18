@@ -53,23 +53,46 @@ FIX "rust" "$FEEDS_PATH/packages/lang/rust" sed -i 's/ci-llvm=true/ci-llvm=false
 # 处理：检测到 2.3.11 时移除这 4 个失效补丁，保留仍能干净套用的
 # 010-upnp-igdv2-compat（IGDv2 微软/苹果兼容），等价于上游 openwrt/packages
 # 的「无补丁」状态，确保 miniupnpd（nftables / iptables 两个 variant）可以编译。
-MINIUPNPD_MK="$(find "$FEEDS_PACKAGES" -maxdepth 3 -type f -wholename '*/miniupnpd/Makefile' -print -quit 2>/dev/null)"
-if [ -f "$MINIUPNPD_MK" ] && grep -q '^PKG_VERSION:=2\.3\.11' "$MINIUPNPD_MK"; then
-	echo " "
-	MINIUPNPD_PATCH_DIR="$(dirname "$MINIUPNPD_MK")/patches"
-	if [ -d "$MINIUPNPD_PATCH_DIR" ]; then
-		for STALE_PATCH in \
-			020-descr-filter-fix.patch \
-			030-allow-private-fix.patch \
-			040-improve-logging.patch \
-			900-miniupnpd-format-xml-to-make-some-app-happy.patch; do
-			if [ -f "$MINIUPNPD_PATCH_DIR/$STALE_PATCH" ]; then
-				rm -f "$MINIUPNPD_PATCH_DIR/$STALE_PATCH"
-				echo "removed stale miniupnpd patch: $STALE_PATCH"
-			fi
-		done
-		echo "miniupnpd 2.3.11 stale patches have been removed!"
-	else
-		echo "miniupnpd patches directory not found; continuing!"
+# ===== miniupnpd 过时补丁清理 =====
+# 根因：上游 immortalwrt/packages 升级到 2.3.11，但未刷新 patches，导致旧补丁打不上。
+# 处理：检测到 2.3.11 时，动态查找路径，精准移除已合入上游的 020/030，以及上下文失效的 040。
+# 注意：保留 010 和 900 补丁（实测对 2.3.11 有效）。
+FIX_MINIUPNPD_STALE_PATCHES() {
+	# 动态查找 miniupnpd 目录，优先从 package/feeds 找，其次从 feeds 找
+	local PATCH_DIR=$(find ./package/feeds ./feeds -maxdepth 4 -type d -name "miniupnpd" 2>/dev/null | head -n 1)
+	
+	# 如果动态查找失败，兜底尝试一下直接路径
+	[ -z "$PATCH_DIR" ] && PATCH_DIR="../feeds/packages/net/miniupnpd"
+
+	[ -d "$PATCH_DIR/patches" ] || { echo "miniupnpd: feed 补丁目录不存在，跳过"; return 0; }
+
+	# 读取 feed 侧 PKG_VERSION 做版本闸门
+	local VER
+	VER=$(grep -m1 -oP '^PKG_VERSION:=\K.*' "$PATCH_DIR/Makefile" 2>/dev/null || true)
+	case "$VER" in
+		2.3.1[1-9]|2.3.[2-9][0-9]|2.[4-9].*|[3-9].*) ;;
+		*) echo "miniupnpd: feed 版本 ${VER:-未知} < 2.3.11，补丁仍适配，跳过清理"; return 0 ;;
+	esac
+
+	# 020：解析器重写已入上游，补丁冗余
+	local P020="$PATCH_DIR/patches/020-descr-filter-fix.patch"
+	if [ -f "$P020" ] && grep -q "Rewrite permission line parser" "$P020"; then
+		rm -f "$P020"
+		echo "miniupnpd: 移除已合入上游的补丁 020-descr-filter-fix.patch"
 	fi
-fi
+
+	# 030：ALLOWPRIVATEIPV4MASK 修复已入上游，补丁冗余
+	local P030="$PATCH_DIR/patches/030-allow-private-fix.patch"
+	if [ -f "$P030" ] && grep -q "ALLOWPRIVATEIPV4MASK" "$P030"; then
+		rm -f "$P030"
+		echo "miniupnpd: 移除已合入上游的补丁 030-allow-private-fix.patch"
+	fi
+
+	# 040：logging 补丁未入上游但上下文已过期，无法适配 2.3.11，移除以恢复构建
+	local P040="$PATCH_DIR/patches/040-improve-logging.patch"
+	if [ -f "$P040" ]; then
+		rm -f "$P040"
+		echo "miniupnpd: 移除无法适配 $VER 的补丁 040-improve-logging.patch"
+	fi
+}
+FIX_MINIUPNPD_STALE_PATCHES
