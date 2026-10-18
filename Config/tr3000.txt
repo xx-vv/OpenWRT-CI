@@ -31,3 +31,5 @@ CONFIG_PACKAGE_input-support=y
 #CONFIG_PACKAGE_qmodem_INCLUDE_SEAL=y
 # qmodem-smsd 由 luci-app-qmodem-next 的 DEPENDS 自动拉入，无需显式声明
 
+#额外插件
+CONFIG_PACKAGE_luci-app-argon-config=y
