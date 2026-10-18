@@ -112,8 +112,8 @@ REGISTER_QMODEM_FEED() {
 	# Makefile（application/*、luci/*），把 luci-app-qmodem / qmodem 等注册为 core
 	# package，feeds install 时 "Not overriding core package" 直接跳过链接，配置符号
 	# 在 defconfig 阶段又被静默丢弃，LuCI 前端依旧进不了固件。
-	if [ -d "./QModem" ] && [ ! -d "../QModem" ]; then
-		mv -f ./QModem ../QModem
+	if [ -d "./package/QModem" ] && [ ! -d "../QModem" ]; then
+		mv -f ./package/QModem ../QModem
 		echo "qmodem: 克隆目录已移出 package/ 至 ../QModem"
 	fi
 	local QMODEM_DIR="../QModem"
@@ -179,7 +179,12 @@ FIX_QMODEM_VERSION
 # 对 2.3.11 可全链干净应用（已实测），不受影响。
 # 移除均带内容/版本守卫：若上游后续刷新补丁或降版，规则自动跳过不误删。
 FIX_MINIUPNPD_STALE_PATCHES() {
-	local PATCH_DIR="../feeds/packages/net/miniupnpd"
+	# 动态查找 miniupnpd 目录，优先从 package/feeds 找，其次从 feeds 找
+	local PATCH_DIR=$(find ./package/feeds ./feeds -maxdepth 4 -type d -name "miniupnpd" 2>/dev/null | head -n 1)
+	
+	# 如果动态查找失败，兜底尝试一下直接路径
+	[ -z "$PATCH_DIR" ] && PATCH_DIR="../feeds/packages/net/miniupnpd"
+
 	[ -d "$PATCH_DIR/patches" ] || { echo "miniupnpd: feed 补丁目录不存在，跳过"; return 0; }
 
 	# 读取 feed 侧 PKG_VERSION 做版本闸门（020/030 在 < 2.3.11 的源码上仍有效）
