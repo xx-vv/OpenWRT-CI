@@ -88,8 +88,9 @@ jobs:
             python3-distutils rsync unzip zlib1g-dev file wget \
             dos2unix libfuse-dev subversion swig time xsltproc \
             libelf-dev ecj fastjar java-propose-classpath \
-            python3 python3-setuptools python3-dev
-
+            python3 python3-setuptools python3-dev \
+            rustc cargo
+            
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
@@ -138,6 +139,49 @@ jobs:
           if [ -f "$PROJECT_MIRRORS_FILE" ]; then
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
+
+      - name: Clone Code
+        id: clone-code
+        run: |
+          git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
+
+          cd ./wrt/
+          WRT_HASH=$(git rev-parse HEAD)
+          echo "WRT_HASH=$WRT_HASH" >> $GITHUB_ENV
+          echo "WRT_CACHE_KEY=$WRT_CACHE_PREFIX-$WRT_HASH" >> $GITHUB_ENV
+          echo "cache_key=$WRT_CACHE_PREFIX-$WRT_HASH" >> "$GITHUB_OUTPUT"
+
+          # GitHub Action 移除国内下载源
+          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
+          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+            sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
+          fi
+
+      - name: Configure Rust Linker
+        run: |
+          # 检查 OpenWrt 工具链是否已就绪（首次构建时尚未生成，安全跳过）
+          TOOLCHAIN_DIR=$(find ./wrt/staging_dir -maxdepth 1 -type d -name "toolchain-*" 2>/dev/null | head -1)
+
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "Toolchain not generated yet. Skip Rust linker configuration."
+            echo "OpenWrt's rust package will handle linker selection during compilation."
+            exit 0
+          fi
+
+          TOOLCHAIN_BIN="$PWD/$TOOLCHAIN_DIR/bin"
+          echo "Found toolchain: $TOOLCHAIN_BIN"
+
+          # Cudy TR3000 (MediaTek Filogic) 为 aarch64，Rust target triple 固定
+          RUST_TARGET="aarch64-unknown-linux-musl"
+
+          mkdir -p $HOME/.cargo
+          cat >> $HOME/.cargo/config.toml <<EOF
+          [target.$RUST_TARGET]
+          linker = "$TOOLCHAIN_BIN/aarch64-openwrt-linux-musl-gcc"
+          EOF
+
+          echo "Rust linker configured for $RUST_TARGET:"
+          cat $HOME/.cargo/config.toml
 
       - name: Check Scripts
         run: |
