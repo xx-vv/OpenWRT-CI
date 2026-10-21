@@ -182,13 +182,17 @@ jobs:
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
 
-      # ★ Rust 修复：defconfig 之后清理并重编译 rust/host，确保包含 aarch64-musl target ★
+      # ★ Rust 修复：defconfig 之后清理并重编译 rust/host ★
+      # 关键点：unset CI 绕过 Rust 1.87+ 的 download-ci-llvm panic；sed 兜底关闭下载
       - name: Rebuild Rust Host for aarch64 musl
         run: |
           cd ./wrt/
 
+          unset CI
+          sed -i 's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/' feeds/packages/lang/rust/Makefile || true
+
           make package/feeds/packages/rust/host/clean
-          make package/feeds/packages/rust/host/compile -j$(nproc)
+          make package/feeds/packages/rust/host/compile -j$(nproc) V=s
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
