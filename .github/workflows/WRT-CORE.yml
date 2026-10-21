@@ -106,7 +106,7 @@ jobs:
           WRT_CACHE_SOURCE=${WRT_SOURCE//\//-}
           WRT_CACHE_BRANCH=${WRT_BRANCH//\//-}
           WRT_CACHE_TARGET="$WRT_TARGET-$WRT_SUBTARGET"
-          WRT_CACHE_PREFIX="wrt-$WRT_CACHE_SOURCE-$WRT_CACHE_BRANCH-$WRT_CACHE_TARGET"
+          WRT_CACHE_PREFIX="wrt-$WRT_CACHE_SOURCE-$WRT_CACHE_BRANCH-$WRT_CACHE_TARGET-rustfix1"
           WRT_WIFI=$(grep -oE 'WIFI-(YES|NO)$' <<< "${WRT_CONFIG^^}" || true); WRT_WIFI=${WRT_WIFI:-none}
 
           {
@@ -139,32 +139,6 @@ jobs:
           if [ -f "$PROJECT_MIRRORS_FILE" ]; then
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
-
-      - name: Configure Rust Linker
-        run: |
-          # 检查 OpenWrt 工具链是否已就绪（首次构建时尚未生成，安全跳过）
-          TOOLCHAIN_DIR=$(find ./wrt/staging_dir -maxdepth 1 -type d -name "toolchain-*" 2>/dev/null | head -1)
-
-          if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "Toolchain not generated yet. Skip Rust linker configuration."
-            echo "OpenWrt's rust package will handle linker selection during compilation."
-            exit 0
-          fi
-
-          TOOLCHAIN_BIN="$PWD/$TOOLCHAIN_DIR/bin"
-          echo "Found toolchain: $TOOLCHAIN_BIN"
-
-          # Cudy TR3000 (MediaTek Filogic) 为 aarch64，Rust target triple 固定
-          RUST_TARGET="aarch64-unknown-linux-musl"
-
-          mkdir -p $HOME/.cargo
-          cat >> $HOME/.cargo/config.toml <<EOF
-          [target.$RUST_TARGET]
-          linker = "$TOOLCHAIN_BIN/aarch64-openwrt-linux-musl-gcc"
-          EOF
-
-          echo "Rust linker configured for $RUST_TARGET:"
-          cat $HOME/.cargo/config.toml
 
       - name: Check Scripts
         run: |
@@ -219,6 +193,32 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
+
+      - name: Configure Rust Linker
+        run: |
+          cd ./wrt/
+          
+          # 先确保 toolchain 已生成
+          if ! ls staging_dir/toolchain-*/bin/*-openwrt-linux-musl-gcc >/dev/null 2>&1; then
+            echo "Toolchain not ready, preparing..."
+            make toolchain/install -j$(nproc) || true
+          fi
+          
+          TOOLCHAIN_BIN=$(ls -d "$PWD"/staging_dir/toolchain-*/bin | head -1)
+          if [ -z "$TOOLCHAIN_BIN" ]; then
+            echo "ERROR: toolchain bin not found"
+            exit 1
+          fi
+          echo "toolchain bin: $TOOLCHAIN_BIN"
+          
+          # 写入 cargo 配置，指向 OpenWrt 的 gcc
+          mkdir -p "$HOME/.cargo"
+          cat > "$HOME/.cargo/config.toml" <<EOF
+          [target.aarch64-unknown-linux-musl]
+          linker = "${TOOLCHAIN_BIN}/aarch64-openwrt-linux-musl-gcc"
+          EOF
+          
+          cat "$HOME/.cargo/config.toml"
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
