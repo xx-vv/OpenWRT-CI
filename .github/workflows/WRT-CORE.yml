@@ -142,7 +142,6 @@ jobs:
           restore-keys: ${{env.WRT_CACHE_PREFIX}}-
           path: |
             ./wrt/.ccache
-            ./wrt/staging_dir/host*
             ./wrt/staging_dir/tool*
 
       - name: Prepare Restored Build Cache
@@ -161,6 +160,13 @@ jobs:
 
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+      # ★ 新增：确保 rust/host 针对 aarch64 musl 目标重新编译 ★
+      - name: Clean Rust Host for Target Architecture
+        run: |
+          cd ./wrt/
+
+          make package/feeds/packages/rust/host/clean
 
       - name: Custom Packages
         run: |
@@ -183,6 +189,13 @@ jobs:
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
 
+      # ★ 新增：在 defconfig 之后强制重新编译 rust/host，确保包含 aarch64-musl target ★
+      - name: Rebuild Rust Host for aarch64 musl
+        run: |
+          cd ./wrt/
+
+          make package/feeds/packages/rust/host/compile -j$(nproc)
+
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
         run: |
@@ -204,7 +217,6 @@ jobs:
           key: ${{env.WRT_CACHE_KEY}}
           path: |
             ./wrt/.ccache
-            ./wrt/staging_dir/host*
             ./wrt/staging_dir/tool*
 
       - name: Machine Information
