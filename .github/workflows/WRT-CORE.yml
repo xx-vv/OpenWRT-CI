@@ -59,32 +59,34 @@ env:
   WRT_SOURCE: ${{inputs.WRT_SOURCE}}
   WRT_PACKAGE: ${{inputs.WRT_PACKAGE}}
   WRT_TEST: ${{inputs.WRT_TEST}}
+  # 关键：锁定 runner 版本，避免 ubuntu-latest 漂移到不支持的 OS
+  # （ImmortalWrt init_build_environment.sh 仅支持 20.04/22.04）
+  WRT_RUNNER: ubuntu-22.04
 
 jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
-    runs-on: ubuntu-latest
+    runs-on: ${{env.WRT_RUNNER}}
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
     steps:
       - name: Checkout Projects
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
       - name: Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a          # 屏蔽 needrestart 交互与延迟重启
         run: |
-          sudo -E apt -yqq purge firefox
-          sudo -E apt -yqq update
-          sudo -E apt -yqq full-upgrade
-          sudo -E apt -yqq autoremove --purge
-          sudo -E apt -yqq autoclean
-          sudo -E apt -yqq clean
-          sudo -E apt -yqq install dos2unix libfuse-dev
+          # 去掉无效的 -E；apt -> apt-get；不做 full-upgrade/autoremove（CI 一次性环境无必要且有破坏风险）
+          sudo apt-get -yqq purge firefox
+          sudo apt-get -yqq update
+          sudo apt-get -yqq install dos2unix
+          # 官方脚本会安装全套编译依赖（含 libfuse-dev），无需手动再装
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-          sudo -E systemctl daemon-reload
-          sudo -E timedatectl set-timezone "Asia/Shanghai"
+          sudo systemctl daemon-reload
+          sudo timedatectl set-timezone "Asia/Shanghai"
 
           sudo mkdir -p /mnt/build_wrt
           sudo chown $USER:$USER /mnt/build_wrt
@@ -139,7 +141,7 @@ jobs:
       - name: Restore Build Cache
         id: cache-restore
         if: ${{ !inputs.WRT_TEST }}
-        uses: actions/cache/restore@main
+        uses: actions/cache/restore@v4
         with:
           key: ${{env.WRT_CACHE_KEY}}
           restore-keys: ${{env.WRT_CACHE_PREFIX}}-
@@ -202,7 +204,7 @@ jobs:
 
       - name: Save Build Cache
         if: ${{ !inputs.WRT_TEST && success() && steps.cache-restore.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@main
+        uses: actions/cache/save@v4
         with:
           key: ${{env.WRT_CACHE_KEY}}
           path: |
@@ -247,7 +249,7 @@ jobs:
           fi
 
       - name: Release Firmware
-        uses: softprops/action-gh-release@master
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
           files: ./wrt/upload/*.*
@@ -278,7 +280,7 @@ jobs:
     name: Roll cache generations
     needs: core
     if: ${{ !inputs.WRT_TEST && needs.core.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{env.WRT_RUNNER}}     # 同样锁定版本
     concurrency:
       group: wrt-cache-rollover-${{github.ref}}-${{needs.core.outputs.cache_prefix}}
       cancel-in-progress: false
