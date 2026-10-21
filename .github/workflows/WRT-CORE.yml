@@ -59,14 +59,11 @@ env:
   WRT_SOURCE: ${{inputs.WRT_SOURCE}}
   WRT_PACKAGE: ${{inputs.WRT_PACKAGE}}
   WRT_TEST: ${{inputs.WRT_TEST}}
-  # 关键：锁定 runner 版本，避免 ubuntu-latest 漂移到不支持的 OS
-  # （ImmortalWrt init_build_environment.sh 仅支持 20.04/22.04）
-  WRT_RUNNER: ubuntu-22.04
 
 jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
-    runs-on: ${{env.WRT_RUNNER}}
+    runs-on: ubuntu-22.04
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
@@ -77,13 +74,11 @@ jobs:
       - name: Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
-          NEEDRESTART_MODE: a          # 屏蔽 needrestart 交互与延迟重启
+          NEEDRESTART_MODE: a
         run: |
-          # 去掉无效的 -E；apt -> apt-get；不做 full-upgrade/autoremove（CI 一次性环境无必要且有破坏风险）
           sudo apt-get -yqq purge firefox
           sudo apt-get -yqq update
           sudo apt-get -yqq install dos2unix
-          # 官方脚本会安装全套编译依赖（含 libfuse-dev），无需手动再装
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo systemctl daemon-reload
           sudo timedatectl set-timezone "Asia/Shanghai"
@@ -280,7 +275,7 @@ jobs:
     name: Roll cache generations
     needs: core
     if: ${{ !inputs.WRT_TEST && needs.core.result == 'success' }}
-    runs-on: ${{env.WRT_RUNNER}}     # 同样锁定版本
+    runs-on: ubuntu-22.04
     concurrency:
       group: wrt-cache-rollover-${{github.ref}}-${{needs.core.outputs.cache_prefix}}
       cancel-in-progress: false
