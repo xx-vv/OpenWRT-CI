@@ -64,13 +64,18 @@ jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
     runs-on: ubuntu-22.04
+    # 略低于平台 6h 硬上限
     timeout-minutes: 345
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
     steps:
       - name: Checkout Projects
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          # v7 安全限制：允许 fork PR 检出，保持与原流水线一致
+          allow-unsafe-pr-checkout: true
 
       - name: Initialization Environment
         env:
@@ -134,51 +139,56 @@ jobs:
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      - name: Restore Build Cache
-        id: cache-restore
+      # ★ 关键改动 1：缓存一分为二，提升命中率与健壮性 ★
+      - name: Restore Build Cache (Toolchain & ccache)
+        id: cache-tc-restore
         if: ${{ !inputs.WRT_TEST }}
         uses: actions/cache/restore@v4
         with:
-          key: ${{env.WRT_CACHE_KEY}}
-          restore-keys: ${{env.WRT_CACHE_PREFIX}}-
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
+          restore-keys: |
+            ${{env.WRT_CACHE_PREFIX}}-tc-
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
 
+      - name: Restore Build Cache (Download Packages)
+        id: cache-dl-restore
+        if: ${{ !inputs.WRT_TEST }}
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{env.WRT_CACHE_PREFIX}}-dl-${{env.WRT_HASH}}
+          restore-keys: |
+            ${{env.WRT_CACHE_PREFIX}}-dl-
+          path: |
+            ./wrt/dl
+
       - name: Prepare Restored Build Cache
-        if: ${{ !inputs.WRT_TEST && steps.cache-restore.outputs.cache-matched-key != '' }}
+        if: ${{ !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-matched-key != '' }}
         run: |
           find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
             find "$DIR" -type f -exec touch {} +
           done
           mkdir -p ./wrt/tmp
           echo "1" > ./wrt/tmp/.build
-          echo "restored build cache: ${{steps.cache-restore.outputs.cache-matched-key}}"
+          echo "restored build cache: ${{steps.cache-tc-restore.outputs.cache-matched-key}}"
 
       - name: Update Feeds
         run: |
           cd ./wrt/
-
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       - name: Custom Packages
         run: |
           cd ./wrt/
-
           $GITHUB_WORKSPACE/Scripts/Packages.sh
           $GITHUB_WORKSPACE/Scripts/Handles.sh
 
-      # ★ 预装 rustup 宿主 rust + aarch64-musl target，配合 rust-lld 交叉链接
-      #    luci-app-mt5700 的 src/Makefile 在包编译阶段调 cargo，原作者的
-      #    设计就是用 rustup + rust-lld + link-self-contained，不依赖
-      #    OpenWrt feeds/packages/lang/rust 的 host 编译（那套要 2 小时）。
-      #    RUSTFLAGS 写入 GITHUB_ENV，后续 make package/.../compile 能继承。★
       - name: Setup rustup for mt5700 Rust backend
         if: ${{ !inputs.WRT_TEST }}
         run: |
           set -euo pipefail
-
           if ! command -v rustup >/dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
@@ -189,84 +199,74 @@ jobs:
           rustc --version
           cargo --version
 
-          # PATH 只能通过 GITHUB_PATH 追加，不能写 GITHUB_ENV 的 PATH（会整段覆盖）
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           {
             echo "CARGO_HOME=$HOME/.cargo"
             echo "RUSTUP_HOME=$HOME/.rustup"
             echo "RUSTFLAGS=-C link-self-contained=yes -C linker=rust-lld"
           } >> "$GITHUB_ENV"
-
           echo "rustup ready: target=aarch64-unknown-linux-musl, linker=rust-lld"
 
       - name: Custom Settings
         run: |
           cd ./wrt/
-
           if [[ "${WRT_CONFIG,,}" == *"test"* ]]; then
             cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt >> .config
           else
             cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt $GITHUB_WORKSPACE/Config/GENERAL.txt >> .config
           fi
-
           $GITHUB_WORKSPACE/Scripts/Settings.sh
-
-          # 替代 make clean：make clean 的 _clean 规则会
-          # rm -rf $(BUILD_DIR) $(STAGING_DIR) $(BIN_DIR)，把上面「恢复缓存」
-          # 步骤拿回的 tool* 工具链连同其时间戳一起删光，导致每次构建
-          # 都从零编译工具链且缓存形同虚设。这里只移除按机型变化的构建
-          # 产物 build_dir 与 bin，保留 staging_dir（工具链）。
+          
           make defconfig -j$(nproc)
+          
+          # ★ 关键改动 2：替代 make clean，保护 staging_dir 工具链不被误删 ★
           rm -rf ./build_dir ./bin
 
-      # ★ 防回归：包已就位 且 .config 已选中，缺任一都会变成
-      #   「编译全绿、固件里却少一个 luci-app-mt5700」这种最难查的失败。★
       - name: Verify luci-app-mt5700 selected
         run: |
           cd ./wrt/
-
           if [ ! -d ./package/luci-app-mt5700 ]; then
             echo "::error::package/luci-app-mt5700 不存在：Packages.sh 未执行或 clone 失败"
             exit 1
           fi
-
           if ! grep -qx 'CONFIG_PACKAGE_luci-app-mt5700=y' ./.config; then
             echo "::error::.config 未选中 luci-app-mt5700：包是否在 make defconfig 之前就位？"
             grep -i 'mt5700' ./.config || echo "（.config 中无任何 mt5700 相关行）"
             exit 1
           fi
-
           echo "luci-app-mt5700 已就位且已被 .config 选中"
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
+          make download -j$(nproc) || make download -j1
 
-          make download -j$(nproc)
+      # ★ 关键改动 3：下载完毕后立刻保存 dl 缓存 (加 always 防止失败不保存) ★
+      - name: Save Build Cache (Download Packages)
+        if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          key: ${{env.WRT_CACHE_PREFIX}}-dl-${{env.WRT_HASH}}
+          path: |
+            ./wrt/dl
 
-      # ★ 单独详细编译 luci-app-mt5700，失败不中断流程，便于拿到完整错误日志 ★
       - name: Compile luci-app-mt5700 (verbose)
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
-
           make package/luci-app-mt5700/compile -j1 V=s || true
 
-      # ★ 编译重试保持并行（不退化成 -j1），日志落盘后分层诊断，
-      #   失败时用 ::error:: 注解直接指到根因行。★
       - name: Compile Firmware
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
-
           export CCACHE_DIR="$(pwd)/.ccache"
           export CCACHE_MAXSIZE=5G
           export CCACHE_COMPRESS=true
           ccache -z 2>/dev/null || true
 
           set +e -o pipefail
-
           make -j$(nproc) 2>&1 | tee build.log
           RC=${PIPESTATUS[0]}
 
@@ -278,23 +278,18 @@ jobs:
 
           if [ "$RC" -ne 0 ]; then
             echo "::group::编译失败诊断"
-
             ANN=$(mktemp)
             : > "$ANN"
 
-            # 第 1 层：apk/opkg 安装期根因
             grep -E "ERROR: .*(trying to overwrite|unable to select packages|package version is invalid|breaks:|conflicts with|installed .* is newer)" build.log \
               | sort -u | head -n 6 >> "$ANN" || true
 
-            # 第 2 层：包编译失败 / 镜像过大
             grep -E "^(ERROR: |make(\\[[0-9]+\\])?: \*\*\* ).*(failed to build|Error [0-9]|too big)" build.log \
               | sort -u | head -n 4 >> "$ANN" || true
 
-            # 第 3 层：make 级联兜底
             grep -E "^make(\\[[0-9]+\\])?: \*\*\* .*(Error [0-9]|Stop)" build.log \
               | sort -u | head -n 4 >> "$ANN" || true
 
-            # 第 4 层：任意 ERROR: 行
             if [ ! -s "$ANN" ]; then
               grep -E "^ERROR: " build.log | sort -u | head -n 8 >> "$ANN" || true
             fi
@@ -310,20 +305,19 @@ jobs:
               grep -nE "error:|Error [0-9]+|collect2:|undefined reference|too big|trying to overwrite|unable to select packages|package version is invalid|breaks:" build.log \
                 | head -n 30
             fi
-
             rm -f "$ANN"
             echo "::endgroup::"
           fi
 
           ccache -s 2>/dev/null || true
-
           exit "$RC"
 
-      - name: Save Build Cache
-        if: ${{ !inputs.WRT_TEST && always() && steps.cache-restore.outputs.cache-hit != 'true' }}
+      # ★ 关键改动 4：编译结束立刻保存工具链缓存，加 always() 防超时杀掉导致不保存 ★
+      - name: Save Build Cache (Toolchain & ccache)
+        if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_KEY}}
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -331,7 +325,6 @@ jobs:
       - name: Machine Information
         run: |
           cd ./wrt/
-
           echo "======================="
           lscpu | grep -E "name|Core|Thread"
           echo "======================="
@@ -343,7 +336,6 @@ jobs:
       - name: Package Firmware
         run: |
           cd ./wrt/ && mkdir ./upload/
-
           cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
           if [[ "$WRT_TEST" != 'true' ]]; then
@@ -360,37 +352,63 @@ jobs:
             done
 
             find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
-
-            make clean -j$(nproc)
+            # 这里用 rm -rf 也可以，因为打包完不需要留着 staging_dir 占空间了
+            rm -rf ./build_dir ./bin
           fi
 
+      # ★ 关键改动 5：使用原生 gh CLI 发布，带重试机制，避免并发上传断连 ★
       - name: Release Firmware
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
-          files: ./wrt/upload/*.*
-          body: |
-            这是个平台固件包，内含多个设备！
-            请注意选择你需要的设备固件！
-            不要问，刷就完事了！
+        if: ${{ !inputs.WRT_TEST }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}"
+          
+          BODY=$(cat <<EOF
+          这是个平台固件包，内含多个设备！
+          请注意选择你需要的设备固件！
+          不要问，刷就完事了！
 
-            全系带开源硬件加速，别问了！
+          全系带开源硬件加速，别问了！
 
-            源码：${{env.WRT_REPO}}
-            分支：${{env.WRT_BRANCH}}
-            提交：${{env.WRT_HASH}}
+          源码：${{env.WRT_REPO}}
+          分支：${{env.WRT_BRANCH}}
+          提交：${{env.WRT_HASH}}
 
-            配置：${{env.WRT_CONFIG}}
-            平台：${{env.WRT_TARGET}}
+          配置：${{env.WRT_CONFIG}}
+          平台：${{env.WRT_TARGET}}
 
-            登录地址：${{env.WRT_IP}}
-            登录密码：${{env.WRT_PW}}
+          登录地址：${{env.WRT_IP}}
+          登录密码：${{env.WRT_PW}}
 
-            WIFI名称：${{env.WRT_SSID}}
-            WIFI密码：${{env.WRT_WORD}}
+          WIFI名称：${{env.WRT_SSID}}
+          WIFI密码：${{env.WRT_WORD}}
 
-            内核版本：${{env.WRT_KVER}}
-            插件列表：${{env.WRT_LIST}}
+          内核版本：${{env.WRT_KVER}}
+          插件列表：${{env.WRT_LIST}}
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release 已存在（$TAG），追加产物"
+          else
+            gh release create "$TAG" --notes "$BODY"
+          fi
+
+          for f in ./wrt/upload/*.*; do
+            [ -f "$f" ] || continue
+            attempt=0
+            until gh release upload --clobber "$TAG" "$f"; do
+              attempt=$((attempt + 1))
+              if [ "$attempt" -ge 5 ]; then
+                echo "::error::上传失败（已重试 5 次）：$f"
+                exit 1
+              fi
+              echo "上传 $f 失败（第 ${attempt} 次，5s 后重试）..."
+              sleep 5
+            done
+          done
 
   cache-rollover:
     name: Roll cache generations
@@ -409,25 +427,25 @@ jobs:
       - name: Roll Build Cache
         run: |
           set -euo pipefail
-
-          CURRENT_CACHE_KEYS=$(gh cache list --repo "$GH_REPO" --key "$WRT_CACHE_KEY" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
-          CURRENT_CACHE_FOUND=0
-          while IFS= read -r CACHE_KEY; do
-            if [ "$CACHE_KEY" = "$WRT_CACHE_KEY" ]; then
-              CURRENT_CACHE_FOUND=1
-              break
-            fi
-          done <<< "$CURRENT_CACHE_KEYS"
-
-          if [ "$CURRENT_CACHE_FOUND" -ne 1 ]; then
-            echo "skip cache rollover: current cache is not available yet"
-            exit 0
+          
+          # 清理 tc 缓存
+          CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
+          if [ -n "$CURRENT_TC_KEYS" ]; then
+            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+              while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
+                [ -n "$CACHE_ID" ] || continue
+                [[ "$CACHE_KEY" == *"${GITHUB_SHA}"* ]] && continue
+                gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete cache $CACHE_ID"
+              done
           fi
 
-          gh cache list --repo "$GH_REPO" --key "$WRT_CACHE_PREFIX-" --ref "$GITHUB_REF" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
-            while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
-              [ -n "$CACHE_ID" ] || continue
-              [ "$CACHE_KEY" = "$WRT_CACHE_KEY" ] && continue
-              gh cache delete "$CACHE_ID" --repo "$GH_REPO" ||
-                echo "warning: failed to delete cache $CACHE_ID ($CACHE_KEY)"
-            done
+          # 清理 dl 缓存
+          CURRENT_DL_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-dl-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
+          if [ -n "$CURRENT_DL_KEYS" ]; then
+            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-dl-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+              while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
+                [ -n "$CACHE_ID" ] || continue
+                [[ "$CACHE_KEY" == *"${GITHUB_SHA}"* ]] && continue
+                gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete cache $CACHE_ID"
+              done
+          fi
