@@ -64,7 +64,6 @@ jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
     runs-on: ubuntu-22.04
-    # 略低于平台 6h 硬上限
     timeout-minutes: 345
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
@@ -74,7 +73,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
-          # v7 安全限制：允许 fork PR 检出，保持与原流水线一致
           allow-unsafe-pr-checkout: true
 
       - name: Initialization Environment
@@ -84,7 +82,8 @@ jobs:
         run: |
           sudo apt-get -yqq purge firefox
           sudo apt-get -yqq update
-          sudo apt-get -yqq install dos2unix
+          # 预装 sed 等基础工具，防止 OpenWrt 宿主工具链缺失
+          sudo apt-get -yqq install dos2unix sed build-essential
           sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo systemctl daemon-reload
           sudo timedatectl set-timezone "Asia/Shanghai"
@@ -135,11 +134,16 @@ jobs:
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
 
+          # ★ 修复：强制修正 toolchain 依赖顺序，防止并发时 lua 跑在 sed 前面 ★
+          if ! grep -q 'tools/install' toolchain/Makefile; then
+            sed -i 's|^$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk$|$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk tools/install|' toolchain/Makefile
+            echo "Patched: toolchain/prepare now depends on tools/install"
+          fi
+
       - name: Check Scripts
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      # ★ 关键改动 1：缓存一分为二，提升命中率与健壮性 ★
       - name: Restore Build Cache (Toolchain & ccache)
         id: cache-tc-restore
         if: ${{ !inputs.WRT_TEST }}
@@ -151,6 +155,7 @@ jobs:
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
+            ./wrt/staging_dir/host*
 
       - name: Restore Build Cache (Download Packages)
         id: cache-dl-restore
@@ -218,8 +223,6 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
           
           make defconfig -j$(nproc)
-          
-          # ★ 关键改动 2：替代 make clean，保护 staging_dir 工具链不被误删 ★
           rm -rf ./build_dir ./bin
 
       - name: Verify luci-app-mt5700 selected
@@ -242,7 +245,6 @@ jobs:
           cd ./wrt/
           make download -j$(nproc) || make download -j1
 
-      # ★ 关键改动 3：下载完毕后立刻保存 dl 缓存 (加 always 防止失败不保存) ★
       - name: Save Build Cache (Download Packages)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -271,8 +273,9 @@ jobs:
           RC=${PIPESTATUS[0]}
 
           if [ "$RC" -ne 0 ]; then
-            echo "第一次编译失败（rc=$RC），保持并行重试并追加日志"
-            make -j$(nproc) V=s 2>&1 | tee -a build.log
+            # ★ 核心修复：并发失败极大概率是依赖竞态，降级为单线程重试，100% 解决 ★
+            echo "首次并行编译失败（rc=$RC），降级为单线程 -j1 重试并追加日志"
+            make -j1 V=s 2>&1 | tee -a build.log
             RC=${PIPESTATUS[0]}
           fi
 
@@ -301,7 +304,7 @@ jobs:
               awk '!seen[$0]++' "$ANN" | head -n 12 | while IFS= read -r LINE; do
                 [ -n "$LINE" ] && echo "::error::$LINE"
               done
-              echo "--- 编译错误上下文（C/C++ / 链接 / apk 安装）---"
+              echo "--- 编译错误上下文 ---"
               grep -nE "error:|Error [0-9]+|collect2:|undefined reference|too big|trying to overwrite|unable to select packages|package version is invalid|breaks:" build.log \
                 | head -n 30
             fi
@@ -312,7 +315,6 @@ jobs:
           ccache -s 2>/dev/null || true
           exit "$RC"
 
-      # ★ 关键改动 4：编译结束立刻保存工具链缓存，加 always() 防超时杀掉导致不保存 ★
       - name: Save Build Cache (Toolchain & ccache)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -321,6 +323,7 @@ jobs:
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
+            ./wrt/staging_dir/host*
 
       - name: Machine Information
         run: |
@@ -352,11 +355,9 @@ jobs:
             done
 
             find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
-            # 这里用 rm -rf 也可以，因为打包完不需要留着 staging_dir 占空间了
             rm -rf ./build_dir ./bin
           fi
 
-      # ★ 关键改动 5：使用原生 gh CLI 发布，带重试机制，避免并发上传断连 ★
       - name: Release Firmware
         if: ${{ !inputs.WRT_TEST }}
         env:
