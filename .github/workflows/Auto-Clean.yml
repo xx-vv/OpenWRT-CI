@@ -1,27 +1,139 @@
 # SPDX-License-Identifier: MIT
-# Copyright (C) 2026 VIKINGYFY
 
-name: Auto-Clean
+name: 自动清理
 
 on:
-  #自动清理：每天早上5点
+  # 自动清理：每天 UTC 21:00（北京时间次日 05:00）
   schedule:
-    - cron: 21 21 * * *
-  #手动清理
+    - cron: 0 21 * * *
+  # 手动清理
   workflow_dispatch:
+    inputs:
+      keep_latest_per_device:
+        description: '保留每个机型最新一个 Release（不勾选则清除 Releases 中的全部文件）'
+        type: boolean
+        default: false
 
-permissions: write-all
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   auto_clean:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old Releases and Workflows
-        uses: ophub/delete-releases-workflows@main
-        with:
-          gh_token: ${{secrets.GITHUB_TOKEN}}
-          delete_releases: true
-          releases_keep_latest: 0
-          delete_tags: true
-          delete_workflows: true
-          workflows_keep_day: 0
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+
+      - name: 清理 Releases（可选保留每机型最新一个）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          # 默认清除全部；手动触发且勾选 keep_latest_per_device 时仅保留每个机型最新一个
+          KEEP_LATEST="${{ inputs.keep_latest_per_device }}"
+          PER_PAGE=100
+          DELETED=0
+
+          echo ">>> 开始处理 Releases（KEEP_LATEST=${KEEP_LATEST}）"
+
+          # 1. 分页拉取全部非草稿 Release，按 published_at 降序暂存到临时文件
+          ALL=$(mktemp)
+          PAGE=1
+          while :; do
+            DATA=$(gh api "repos/${REPO}/releases?per_page=${PER_PAGE}&page=${PAGE}" \
+              --jq '[.[] | select(.draft==false)] | sort_by(.published_at) | reverse | .[] | "\(.id)\t\(.tag_name)"')
+            [ -z "${DATA}" ] && break
+            printf '%s\n' "${DATA}" >> "${ALL}"
+            PAGE=$((PAGE + 1))
+          done
+
+          TOTAL=$(wc -l < "${ALL}")
+          echo "Total non-draft releases: ${TOTAL}"
+
+          # 2. 若开启 keep_latest，计算每个归组需保留的最新 Release id
+          #    兼容两种 Tag 格式：
+          #      旧：<配置>-<MT模式>-<源码>-<分支>-<YY.MM.DD>-<HH.MM.SS>（剥日期段后 drop=2）
+          #      新：<组名>-<YY.MM.DD>（按变体归组，组名无连字符，drop=0）
+          KEEP_IDS=""
+          if [ "${KEEP_LATEST}" = "true" ]; then
+            KEEP_IDS=$(awk -F'\t' '
+              {
+                t = $2
+                drop = 0
+                if (sub(/-[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]-[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]$/, "", t)) drop = 2
+                else if (sub(/-[0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]$/, "", t)) drop = 0
+                n = split(t, p, "-")
+                if (n - drop < 1) { print t "\t" $1; next }
+                k = p[1]
+                for (i = 2; i <= n - drop; i++) k = k "-" p[i]
+                print k "\t" $1
+              }' "${ALL}" | awk -F'\t' '!seen[$1]++{print $2}')
+            echo "Keep-latest mode: keeping $(echo "${KEEP_IDS}" | wc -w | tr -d ' ') release(s)."
+          fi
+
+          # 3. 遍历并删除（keep_latest 模式下跳过需保留的）
+          while IFS=$'\t' read -r RID RTAG; do
+            [ -z "${RID}" ] && continue
+
+            if [ "${KEEP_LATEST}" = "true" ] && echo "${KEEP_IDS}" | grep -qx "${RID}"; then
+              echo "  [keep] ${RTAG} (id=${RID})"
+              continue
+            fi
+
+            echo "  [delete] ${RTAG} (id=${RID})"
+            gh api "repos/${REPO}/releases/${RID}" -X DELETE --silent || true
+            gh api "repos/${REPO}/git/refs/tags/${RTAG}" -X DELETE --silent 2>/dev/null || true
+            DELETED=$((DELETED + 1))
+          done < "${ALL}"
+
+          rm -f "${ALL}"
+
+          if [ "${KEEP_LATEST}" = "true" ]; then
+            echo "=== Done: deleted ${DELETED} old release(s), kept $(echo "${KEEP_IDS}" | wc -w | tr -d ' ') latest ==="
+          else
+            echo "=== Done: deleted ${DELETED} release(s), Releases 已清空 ==="
+          fi
+
+      - name: 清理 30 天前的工作流运行记录
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          # 获取 30 天前的日期 (格式: YYYY-MM-DD)
+          CUTOFF_DATE=$(date -u -d '30 days ago' +%Y-%m-%d)
+          echo ">>> 开始清理创建于 ${CUTOFF_DATE} 之前的工作流运行记录..."
+
+          # 获取所有工作流 ID
+          WORKFLOWS=$(gh api "repos/${{ github.repository }}/actions/workflows" --jq '.workflows[].id')
+
+          for WF_ID in ${WORKFLOWS}; do
+            echo "Checking workflow ID: ${WF_ID}"
+            
+            # 循环拉取历史记录，直到没有更早的记录为止
+            while true; do
+              # 获取最近 100 条已完成且早于指定日期的 Run ID
+              RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/${WF_ID}/runs?per_page=100&status=completed" \
+                --jq ".workflow_runs[] | select(.created_at < \"${CUTOFF_DATE}T00:00:00Z\") | .id")
+              
+              # 如果没有符合条件的记录，跳出循环
+              [ -z "${RUNS}" ] && break
+              
+              for RUN_ID in ${RUNS}; do
+                echo "  Deleting run ${RUN_ID}..."
+                gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" -X DELETE --silent || true
+              done
+              
+              # 如果获取到的记录少于 100 条，说明已经是最后一页符合条件的了，退出循环
+              # 否则继续循环去拉取更早的记录
+              RUNS_COUNT=$(echo "${RUNS}" | wc -l)
+              if [ "${RUNS_COUNT}" -lt 100 ]; then
+                break
+              fi
+            done
+          done
+
+          echo "=== Workflow cleanup done ==="
