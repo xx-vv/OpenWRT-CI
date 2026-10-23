@@ -113,26 +113,19 @@ jobs:
           for WF_ID in ${WORKFLOWS}; do
             echo "Checking workflow ID: ${WF_ID}"
             
-            # 循环拉取历史记录，直到没有更早的记录为止
-            while true; do
-              # 获取最近 100 条已完成且早于指定日期的 Run ID
-              RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/${WF_ID}/runs?per_page=100&status=completed" \
-                --jq ".workflow_runs[] | select(.created_at < \"${CUTOFF_DATE}T00:00:00Z\") | .id")
-              
-              # 如果没有符合条件的记录，跳出循环
-              [ -z "${RUNS}" ] && break
-              
-              for RUN_ID in ${RUNS}; do
-                echo "  Deleting run ${RUN_ID}..."
-                gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" -X DELETE --silent || true
-              done
-              
-              # 如果获取到的记录少于 100 条，说明已经是最后一页符合条件的了，退出循环
-              # 否则继续循环去拉取更早的记录
-              RUNS_COUNT=$(echo "${RUNS}" | wc -l)
-              if [ "${RUNS_COUNT}" -lt 100 ]; then
-                break
-              fi
+            # 使用 --paginate 自动处理分页，一次性获取所有符合日期条件的 Run ID
+            # 彻底避免原有代码因只拉取第一页而导致的无限死循环
+            RUNS=$(gh api --paginate "repos/${{ github.repository }}/actions/workflows/${WF_ID}/runs?per_page=100&status=completed" \
+              --jq ".workflow_runs[] | select(.created_at < \"${CUTOFF_DATE}T00:00:00Z\") | .id" || true)
+            
+            if [ -z "${RUNS}" ]; then
+              echo "  No runs older than ${CUTOFF_DATE} found."
+              continue
+            fi
+            
+            for RUN_ID in ${RUNS}; do
+              echo "  Deleting run ${RUN_ID}..."
+              gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" -X DELETE --silent || true
             done
           done
 
