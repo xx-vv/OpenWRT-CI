@@ -64,6 +64,7 @@ jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
     runs-on: ubuntu-22.04
+    timeout-minutes: 345
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
@@ -168,6 +169,36 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Packages.sh
           $GITHUB_WORKSPACE/Scripts/Handles.sh
 
+      # ★ 预装 rustup 宿主 rust + aarch64-musl target，配合 rust-lld 交叉链接
+      #    luci-app-mt5700 的 src/Makefile 在包编译阶段调 cargo，原作者的
+      #    设计就是用 rustup + rust-lld + link-self-contained，不依赖
+      #    OpenWrt feeds/packages/lang/rust 的 host 编译（那套要 2 小时）。
+      #    RUSTFLAGS 写入 GITHUB_ENV，后续 make package/.../compile 能继承。★
+      - name: Setup rustup for mt5700 Rust backend
+        if: ${{ !inputs.WRT_TEST }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup target add aarch64-unknown-linux-musl
+          rustup target list --installed | grep -qx aarch64-unknown-linux-musl
+          rustc --version
+          cargo --version
+
+          # PATH 只能通过 GITHUB_PATH 追加，不能写 GITHUB_ENV 的 PATH（会整段覆盖）
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          {
+            echo "CARGO_HOME=$HOME/.cargo"
+            echo "RUSTUP_HOME=$HOME/.rustup"
+            echo "RUSTFLAGS=-C link-self-contained=yes -C linker=rust-lld"
+          } >> "$GITHUB_ENV"
+
+          echo "rustup ready: target=aarch64-unknown-linux-musl, linker=rust-lld"
+
       - name: Custom Settings
         run: |
           cd ./wrt/
@@ -180,21 +211,32 @@ jobs:
 
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
-          make defconfig -j$(nproc) && make clean -j$(nproc)
+          # 替代 make clean：make clean 的 _clean 规则会
+          # rm -rf $(BUILD_DIR) $(STAGING_DIR) $(BIN_DIR)，把上面「恢复缓存」
+          # 步骤拿回的 tool* 工具链连同其时间戳一起删光，导致每次构建
+          # 都从零编译工具链且缓存形同虚设。这里只移除按机型变化的构建
+          # 产物 build_dir 与 bin，保留 staging_dir（工具链）。
+          make defconfig -j$(nproc)
+          rm -rf ./build_dir ./bin
 
-      # ★ Rust 修复：defconfig 之后清理并重编译 rust/host，确保包含 aarch64-musl target ★
-      - name: Rebuild Rust Host for aarch64 musl
+      # ★ 防回归：包已就位 且 .config 已选中，缺任一都会变成
+      #   「编译全绿、固件里却少一个 luci-app-mt5700」这种最难查的失败。★
+      - name: Verify luci-app-mt5700 selected
         run: |
           cd ./wrt/
 
-          unset CI
-          sed -i 's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/' feeds/packages/lang/rust/Makefile || true
+          if [ ! -d ./package/luci-app-mt5700 ]; then
+            echo "::error::package/luci-app-mt5700 不存在：Packages.sh 未执行或 clone 失败"
+            exit 1
+          fi
 
-          # 先构建交叉工具链，rust/host 编译需要 aarch64-openwrt-linux-musl-gcc
-          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          if ! grep -qx 'CONFIG_PACKAGE_luci-app-mt5700=y' ./.config; then
+            echo "::error::.config 未选中 luci-app-mt5700：包是否在 make defconfig 之前就位？"
+            grep -i 'mt5700' ./.config || echo "（.config 中无任何 mt5700 相关行）"
+            exit 1
+          fi
 
-          make package/feeds/packages/rust/host/clean
-          make package/feeds/packages/rust/host/compile -j$(nproc) V=s
+          echo "luci-app-mt5700 已就位且已被 .config 选中"
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
@@ -211,15 +253,74 @@ jobs:
 
           make package/luci-app-mt5700/compile -j1 V=s || true
 
+      # ★ 编译重试保持并行（不退化成 -j1），日志落盘后分层诊断，
+      #   失败时用 ::error:: 注解直接指到根因行。★
       - name: Compile Firmware
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
 
-          make -j$(nproc) || make -j1 V=s
+          export CCACHE_DIR="$(pwd)/.ccache"
+          export CCACHE_MAXSIZE=5G
+          export CCACHE_COMPRESS=true
+          ccache -z 2>/dev/null || true
+
+          set +e -o pipefail
+
+          make -j$(nproc) 2>&1 | tee build.log
+          RC=${PIPESTATUS[0]}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "第一次编译失败（rc=$RC），保持并行重试并追加日志"
+            make -j$(nproc) V=s 2>&1 | tee -a build.log
+            RC=${PIPESTATUS[0]}
+          fi
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::group::编译失败诊断"
+
+            ANN=$(mktemp)
+            : > "$ANN"
+
+            # 第 1 层：apk/opkg 安装期根因
+            grep -E "ERROR: .*(trying to overwrite|unable to select packages|package version is invalid|breaks:|conflicts with|installed .* is newer)" build.log \
+              | sort -u | head -n 6 >> "$ANN" || true
+
+            # 第 2 层：包编译失败 / 镜像过大
+            grep -E "^(ERROR: |make(\\[[0-9]+\\])?: \*\*\* ).*(failed to build|Error [0-9]|too big)" build.log \
+              | sort -u | head -n 4 >> "$ANN" || true
+
+            # 第 3 层：make 级联兜底
+            grep -E "^make(\\[[0-9]+\\])?: \*\*\* .*(Error [0-9]|Stop)" build.log \
+              | sort -u | head -n 4 >> "$ANN" || true
+
+            # 第 4 层：任意 ERROR: 行
+            if [ ! -s "$ANN" ]; then
+              grep -E "^ERROR: " build.log | sort -u | head -n 8 >> "$ANN" || true
+            fi
+
+            if [ ! -s "$ANN" ]; then
+              echo "::error::未匹配到包级错误行，输出日志末尾 30 行"
+              tail -n 30 build.log
+            else
+              awk '!seen[$0]++' "$ANN" | head -n 12 | while IFS= read -r LINE; do
+                [ -n "$LINE" ] && echo "::error::$LINE"
+              done
+              echo "--- 编译错误上下文（C/C++ / 链接 / apk 安装）---"
+              grep -nE "error:|Error [0-9]+|collect2:|undefined reference|too big|trying to overwrite|unable to select packages|package version is invalid|breaks:" build.log \
+                | head -n 30
+            fi
+
+            rm -f "$ANN"
+            echo "::endgroup::"
+          fi
+
+          ccache -s 2>/dev/null || true
+
+          exit "$RC"
 
       - name: Save Build Cache
-        if: ${{ !inputs.WRT_TEST && success() && steps.cache-restore.outputs.cache-hit != 'true' }}
+        if: ${{ !inputs.WRT_TEST && always() && steps.cache-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: ${{env.WRT_CACHE_KEY}}
