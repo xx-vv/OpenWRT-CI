@@ -318,12 +318,21 @@ jobs:
 
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
-            # ★ 借鉴原作者：强壮的命名与防冲突逻辑
+            # ★ 借鉴原作者：强壮的命名与防冲突逻辑（已增强）
+            # 安全化：把可能出现在文件名中的非法字符替换掉
+            SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
+            SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
+            SAFE_BRANCH=$(echo "$WRT_BRANCH" | tr '/ ' '__')
+            SAFE_TARGET=$(echo "$WRT_TARGET" | tr '/ ' '__')
+            SAFE_WIFI="$WRT_WIFI"
+            [ "$SAFE_WIFI" = "none" ] && SAFE_WIFI=""   # none 不参与命名
+            SAFE_DATE="$WRT_DATE"
+
             for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
               BASE=$(basename "$FILE")
               case "$BASE" in
-                *.bin|*.img|*.gz|*.vmdk) ;;   
-                *) mv -f "$FILE" "./upload/$BASE"; continue ;;  
+                *.bin|*.img|*.gz|*.vmdk) ;;
+                *) mv -f "$FILE" "./upload/$BASE"; continue ;;
               esac
               EXT=$(echo "$BASE" | cut -d '.' -f 2-)
               STEM="${BASE%.*}"
@@ -338,8 +347,14 @@ jobs:
                 *kernel*)       TYPE=kernel ;;
                 *)              TYPE="" ;;
               esac
-              NEW_BASE="${WRT_NAME}-${WRT_INFO}-${WRT_BRANCH}-${WRT_WIFI}"
-              [ -n "$TYPE" ] && NEW_BASE="$NEW_BASE-$TYPE"
+
+              # 组装基础名：只拼接非空字段，避免出现 "--" 或 "-none"
+              PARTS=("$SAFE_NAME" "$SAFE_INFO" "$SAFE_BRANCH" "$SAFE_TARGET")
+              [ -n "$SAFE_WIFI" ] && PARTS+=("$SAFE_WIFI")
+              [ -n "$TYPE" ]      && PARTS+=("$TYPE")
+              NEW_BASE=$(IFS='-'; echo "${PARTS[*]}")
+              NEW_BASE="$NEW_BASE-$SAFE_DATE"
+
               NEW_FILE="$NEW_BASE.$EXT"
               if [ -e "./upload/$NEW_FILE" ]; then
                 FS=$(echo "$STEM" | grep -ioE 'squashfs|ext4' | tail -n 1 || true)
