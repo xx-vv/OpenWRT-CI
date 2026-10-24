@@ -1,49 +1,23 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 
-#云编译公用核心
 name: WRT-CORE
 
 on:
   workflow_call:
     inputs:
-      WRT_CONFIG:
-        required: true
-        type: string
-      WRT_THEME:
-        required: true
-        type: string
-      WRT_NAME:
-        required: true
-        type: string
-      WRT_SSID:
-        required: true
-        type: string
-      WRT_WORD:
-        required: true
-        type: string
-      WRT_IP:
-        required: true
-        type: string
-      WRT_PW:
-        required: true
-        type: string
-      WRT_REPO:
-        required: true
-        type: string
-      WRT_BRANCH:
-        required: true
-        type: string
-      WRT_SOURCE:
-        required: true
-        type: string
-      WRT_PACKAGE:
-        required: false
-        type: string
-      WRT_TEST:
-        required: false
-        default: false
-        type: boolean
+      WRT_CONFIG: { required: true, type: string }
+      WRT_THEME: { required: true, type: string }
+      WRT_NAME: { required: true, type: string }
+      WRT_SSID: { required: true, type: string }
+      WRT_WORD: { required: true, type: string }
+      WRT_IP: { required: true, type: string }
+      WRT_PW: { required: true, type: string }
+      WRT_REPO: { required: true, type: string }
+      WRT_BRANCH: { required: true, type: string }
+      WRT_SOURCE: { required: true, type: string }
+      WRT_PACKAGE: { required: false, type: string }
+      WRT_TEST: { required: false, default: false, type: boolean }
 
 env:
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
@@ -82,11 +56,10 @@ jobs:
         run: |
           sudo apt-get -yqq purge firefox
           sudo apt-get -yqq update
-          sudo apt-get -yqq full-upgrade
-          sudo apt-get -yqq autoremove --purge
+          # 原作者建议：不做 full-upgrade，省去数分钟耗时的无用全量升级
           sudo apt-get -yqq autoclean
           sudo apt-get -yqq clean
-
+          
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential bzip2 ca-certificates ccache clang \
             cmake cpio curl device-tree-compiler dos2unix file flex \
@@ -97,7 +70,6 @@ jobs:
             unzip wget xz-utils zlib1g-dev zstd
 
           sudo timedatectl set-timezone "Asia/Shanghai"
-
           sudo mkdir -p /mnt/build_wrt
           sudo chown $USER:$USER /mnt/build_wrt
           sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
@@ -131,20 +103,18 @@ jobs:
         id: clone-code
         run: |
           git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
-
           cd ./wrt/
           WRT_HASH=$(git rev-parse HEAD)
           echo "WRT_HASH=$WRT_HASH" >> $GITHUB_ENV
           echo "WRT_CACHE_KEY=$WRT_CACHE_PREFIX-$WRT_HASH" >> $GITHUB_ENV
           echo "cache_key=$WRT_CACHE_PREFIX-$WRT_HASH" >> "$GITHUB_OUTPUT"
 
-          # GitHub Action 移除国内下载源
           PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
           if [ -f "$PROJECT_MIRRORS_FILE" ]; then
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
 
-          # ★ 修复：强制修正 toolchain 依赖顺序，防止并发时 lua 跑在 sed 前面 ★
+          # 强制修正 toolchain 依赖顺序
           if ! grep -q 'tools/install' toolchain/Makefile; then
             sed -i 's|^$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk$|$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk tools/install|' toolchain/Makefile
             echo "Patched: toolchain/prepare now depends on tools/install"
@@ -154,6 +124,7 @@ jobs:
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
+      # ★ 借鉴原作者：缓存路径增加 host*，防止 host 工具丢失
       - name: Restore Build Cache (Toolchain & ccache)
         id: cache-tc-restore
         if: ${{ !inputs.WRT_TEST }}
@@ -211,16 +182,12 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           rustup target add aarch64-unknown-linux-musl
           rustup target list --installed | grep -qx aarch64-unknown-linux-musl
-          rustc --version
-          cargo --version
-
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           {
             echo "CARGO_HOME=$HOME/.cargo"
             echo "RUSTUP_HOME=$HOME/.rustup"
             echo "RUSTFLAGS=-C link-self-contained=yes -C linker=rust-lld"
           } >> "$GITHUB_ENV"
-          echo "rustup ready: target=aarch64-unknown-linux-musl, linker=rust-lld"
 
       - name: Custom Settings
         run: |
@@ -233,21 +200,20 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
           
           make defconfig -j$(nproc)
+          # 保护 staging_dir 不被清理
           rm -rf ./build_dir ./bin
 
       - name: Verify luci-app-mt5700 selected
         run: |
           cd ./wrt/
           if [ ! -d ./package/luci-app-mt5700 ]; then
-            echo "::error::package/luci-app-mt5700 不存在：Packages.sh 未执行或 clone 失败"
+            echo "::error::package/luci-app-mt5700 不存在"
             exit 1
           fi
           if ! grep -qx 'CONFIG_PACKAGE_luci-app-mt5700=y' ./.config; then
-            echo "::error::.config 未选中 luci-app-mt5700：包是否在 make defconfig 之前就位？"
-            grep -i 'mt5700' ./.config || echo "（.config 中无任何 mt5700 相关行）"
+            echo "::error::.config 未选中 luci-app-mt5700"
             exit 1
           fi
-          echo "luci-app-mt5700 已就位且已被 .config 选中"
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
@@ -255,6 +221,7 @@ jobs:
           cd ./wrt/
           make download -j$(nproc) || make download -j1
 
+      # ★ 借鉴原作者：下载完立刻存 dl 缓存，哪怕后面编译超时也不亏
       - name: Save Build Cache (Download Packages)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -283,7 +250,6 @@ jobs:
           RC=${PIPESTATUS[0]}
 
           if [ "$RC" -ne 0 ]; then
-            # ★ 核心修复：并发失败极大概率是依赖竞态，降级为单线程重试，100% 解决 ★
             echo "首次并行编译失败（rc=$RC），降级为单线程 -j1 重试并追加日志"
             make -j1 V=s 2>&1 | tee -a build.log
             RC=${PIPESTATUS[0]}
@@ -296,10 +262,8 @@ jobs:
 
             grep -E "ERROR: .*(trying to overwrite|unable to select packages|package version is invalid|breaks:|conflicts with|installed .* is newer)" build.log \
               | sort -u | head -n 6 >> "$ANN" || true
-
             grep -E "^(ERROR: |make(\\[[0-9]+\\])?: \*\*\* ).*(failed to build|Error [0-9]|too big)" build.log \
               | sort -u | head -n 4 >> "$ANN" || true
-
             grep -E "^make(\\[[0-9]+\\])?: \*\*\* .*(Error [0-9]|Stop)" build.log \
               | sort -u | head -n 4 >> "$ANN" || true
 
@@ -325,6 +289,7 @@ jobs:
           ccache -s 2>/dev/null || true
           exit "$RC"
 
+      # ★ 借鉴原作者：使用 always() 抢救工具链缓存，防止被硬超时杀掉
       - name: Save Build Cache (Toolchain & ccache)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -338,13 +303,9 @@ jobs:
       - name: Machine Information
         run: |
           cd ./wrt/
-          echo "======================="
           lscpu | grep -E "name|Core|Thread"
-          echo "======================="
           df -h
-          echo "======================="
           du -h --max-depth=1
-          echo "======================="
 
       - name: Package Firmware
         run: |
@@ -357,11 +318,39 @@ jobs:
 
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
+            # ★ 借鉴原作者：强壮的命名与防冲突逻辑
             for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
-              EXT=$(basename $FILE | cut -d '.' -f 2-)
-              NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($WRT_TARGET\).*")
-              NEW_FILE="$NAME"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_WIFI"-"$WRT_DATE"."$EXT"
-              mv -f $FILE ./upload/$NEW_FILE
+              BASE=$(basename "$FILE")
+              case "$BASE" in
+                *.bin|*.img|*.gz|*.vmdk) ;;   
+                *) mv -f "$FILE" "./upload/$BASE"; continue ;;  
+              esac
+              EXT=$(echo "$BASE" | cut -d '.' -f 2-)
+              STEM="${BASE%.*}"
+              case "$STEM" in
+                *sysupgrade*)   TYPE=sysupgrade ;;
+                *factory*)      TYPE=factory ;;
+                *initramfs*)    TYPE=initramfs ;;
+                *recovery*)     TYPE=recovery ;;
+                *combined-efi*) TYPE=efi ;;
+                *combined*)     TYPE=combined ;;
+                *rootfs*)       TYPE=rootfs ;;
+                *kernel*)       TYPE=kernel ;;
+                *)              TYPE="" ;;
+              esac
+              NEW_BASE="${WRT_NAME}-${WRT_INFO}-${WRT_BRANCH}-${WRT_WIFI}"
+              [ -n "$TYPE" ] && NEW_BASE="$NEW_BASE-$TYPE"
+              NEW_FILE="$NEW_BASE.$EXT"
+              if [ -e "./upload/$NEW_FILE" ]; then
+                FS=$(echo "$STEM" | grep -ioE 'squashfs|ext4' | tail -n 1 || true)
+                if [ -n "$FS" ] && [ ! -e "./upload/$NEW_BASE-$FS.$EXT" ]; then
+                  NEW_FILE="$NEW_BASE-$FS.$EXT"
+                else
+                  SUFFIX=$(echo "$BASE" | md5sum | cut -c 1-6)
+                  NEW_FILE="$NEW_BASE-$SUFFIX.$EXT"
+                fi
+              fi
+              mv -f "$FILE" "./upload/$NEW_FILE"
             done
 
             find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
@@ -421,6 +410,7 @@ jobs:
             done
           done
 
+  # 缓存世代交替 Job 保持不变
   cache-rollover:
     name: Roll cache generations
     needs: core
@@ -438,8 +428,6 @@ jobs:
       - name: Roll Build Cache
         run: |
           set -euo pipefail
-          
-          # 清理 tc 缓存
           CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
           if [ -n "$CURRENT_TC_KEYS" ]; then
             gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
@@ -450,7 +438,6 @@ jobs:
               done
           fi
 
-          # 清理 dl 缓存
           CURRENT_DL_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-dl-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
           if [ -n "$CURRENT_DL_KEYS" ]; then
             gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-dl-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
