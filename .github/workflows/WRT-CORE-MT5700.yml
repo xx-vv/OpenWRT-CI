@@ -124,17 +124,19 @@ jobs:
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      # ★ 缓存路径增加 host*，防止 host 工具丢失
-      # ★ key 后缀 v3：之前用 v2 跑失败过，staging_dir/host* 可能已存错误状态，
-      #   强制换一代 key 做一次干净构建。旧的 v2 缓存由 cache-rollover 或手动清理。
+      # ★ 缓存路径包含 host*，需在恢复后做完整性校验，防止命中残缺缓存。
+      # ★ key 后缀 v4：v3 期间出现过 staging_dir/host/bin/sed 缺失导致的
+      #   lua [host] 构建失败（run 123328134659），强制换代一次干净构建。
+      # ★ restore-keys 收窄到同 hash 的 v4，不再前缀匹配旧世代缓存，
+      #   避免把上一代残缺的 host 工具目录恢复进来。
       - name: Restore Build Cache (Toolchain & ccache)
         id: cache-tc-restore
         if: ${{ !inputs.WRT_TEST }}
         uses: actions/cache/restore@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v3
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
           restore-keys: |
-            ${{env.WRT_CACHE_PREFIX}}-tc-
+            ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -161,6 +163,23 @@ jobs:
           echo "1" > ./wrt/tmp/.build
           echo "restored build cache: ${{steps.cache-tc-restore.outputs.cache-matched-key}}"
 
+      # ★ 完整性校验：staging_dir/host/bin/sed 是 tools/ 阶段的核心产物，
+      #   缺它会导致后续 host 包（如 lua [host]）在 configure 阶段 Error 127。
+      #   恢复的缓存若缺 sed，说明该缓存来自一次被中断/不完整的构建；
+      #   此时删掉 host/hostpkg staging 与 tmp/.build 标记，让 tools/install 重跑。
+      - name: Validate Host Tools
+        if: ${{ !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-matched-key != '' }}
+        run: |
+          if [ ! -x "./wrt/staging_dir/host/bin/sed" ]; then
+            echo "::warning::staging_dir/host/bin/sed missing, purging broken host staging"
+            rm -rf ./wrt/staging_dir/host
+            rm -rf ./wrt/staging_dir/hostpkg
+            rm -f ./wrt/tmp/.build
+            echo "HOST_STAGING_PURGED=1" >> "$GITHUB_ENV"
+          else
+            echo "staging_dir/host/bin/sed present, host tools cache looks complete"
+          fi
+
       - name: Update Feeds
         run: |
           cd ./wrt/
@@ -184,7 +203,10 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc)
-          # 保护 staging_dir 不被清理
+          # ★ 只删构建产物，不再 make clean：make clean 会动 staging_dir，
+          #   在恢复缓存的构建里若 host staging 本身不完整，clean 无法修复它，
+          #   反而让后续编译在「看似有缓存、实际缺文件」的状态下继续跑。
+          #   host 工具完整性由 Validate Host Tools 步骤负责。
           rm -rf ./build_dir ./bin
 
       - name: Verify luci-app-mt5700 selected
@@ -410,11 +432,13 @@ jobs:
           exit "$RC"
 
       # ★ always()：即使后续编译超时被杀，工具链缓存也抢救下来
+      # ★ key 与 restore 同步为 v4；HOST_STAGING_PURGED=1 时跳过保存，
+      #   避免把刚清空的 host staging 以「完整缓存」身份写回。
       - name: Save Build Cache (Toolchain & ccache)
-        if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' && env.HOST_STAGING_PURGED != '1' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v3
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
