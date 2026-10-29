@@ -169,7 +169,9 @@ compile:
 
 '''
 
-patched, n = re.subn(r'(?ms)^compile:.*?(?=^install:)', new_compile, src)
+# 用 lambda 作为替换参数，避免 re.subn 把 new_compile 里的反斜杠当转义序列解析
+# （Python 替换字符串对 \ + 非数字字符的解析行为在旧版本上可能报 bad escape）
+patched, n = re.subn(r'(?ms)^compile:.*?(?=^install:)', lambda m: new_compile, src)
 if n != 1:
     sys.exit('ERROR: src/Makefile 的 compile 目标匹配数量为 %d（期望 1），上游结构已变更' % n)
 
