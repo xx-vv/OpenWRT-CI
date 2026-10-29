@@ -59,7 +59,7 @@ jobs:
           # 原作者建议：不做 full-upgrade，省去数分钟耗时的无用全量升级
           sudo apt-get -yqq autoclean
           sudo apt-get -yqq clean
-          
+
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential bzip2 ca-certificates ccache clang \
             cmake cpio curl device-tree-compiler dos2unix file flex \
@@ -130,7 +130,7 @@ jobs:
         if: ${{ !inputs.WRT_TEST }}
         uses: actions/cache/restore@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v2
           restore-keys: |
             ${{env.WRT_CACHE_PREFIX}}-tc-
           path: |
@@ -186,7 +186,6 @@ jobs:
           {
             echo "CARGO_HOME=$HOME/.cargo"
             echo "RUSTUP_HOME=$HOME/.rustup"
-            echo "RUSTFLAGS=-C link-self-contained=yes -C linker=rust-lld"
           } >> "$GITHUB_ENV"
 
       - name: Custom Settings
@@ -198,7 +197,7 @@ jobs:
             cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt $GITHUB_WORKSPACE/Config/CPE.txt >> .config
           fi
           $GITHUB_WORKSPACE/Scripts/Settings.sh
-          
+
           make defconfig -j$(nproc)
           # 保护 staging_dir 不被清理
           rm -rf ./build_dir ./bin
@@ -232,6 +231,8 @@ jobs:
 
       - name: Compile luci-app-mt5700 (verbose)
         if: ${{ !inputs.WRT_TEST }}
+        env:
+          RUSTFLAGS: "-C link-self-contained=yes"
         run: |
           cd ./wrt/
           make package/luci-app-mt5700/compile -j1 V=s || true
@@ -294,7 +295,7 @@ jobs:
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v2
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -379,7 +380,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}"
-          
+
           BODY=$(cat <<EOF
           这是个平台固件包，内含多个设备！
           请注意选择你需要的设备固件！
