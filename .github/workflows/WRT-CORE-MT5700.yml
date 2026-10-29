@@ -124,13 +124,15 @@ jobs:
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      # ★ 借鉴原作者：缓存路径增加 host*，防止 host 工具丢失
+      # ★ 缓存路径增加 host*，防止 host 工具丢失
+      # ★ key 后缀 v3：之前用 v2 跑失败过，staging_dir/host* 可能已存错误状态，
+      #   强制换一代 key 做一次干净构建。旧的 v2 缓存由 cache-rollover 或手动清理。
       - name: Restore Build Cache (Toolchain & ccache)
         id: cache-tc-restore
         if: ${{ !inputs.WRT_TEST }}
         uses: actions/cache/restore@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v2
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v3
           restore-keys: |
             ${{env.WRT_CACHE_PREFIX}}-tc-
           path: |
@@ -337,7 +339,7 @@ jobs:
           cd ./wrt/
           make download -j$(nproc) || make download -j1
 
-      # ★ 借鉴原作者：下载完立刻存 dl 缓存，哪怕后面编译超时也不亏
+      # ★ 下载完立刻存 dl 缓存，哪怕后面编译超时也不亏
       - name: Save Build Cache (Download Packages)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -346,11 +348,13 @@ jobs:
           path: |
             ./wrt/dl
 
+      # 单独编译 luci-app-mt5700 做快速诊断：注入与 prebuilt 都就位时几秒钟完成，
+      # 若失败能立即定位到这一步（而不是等全量 make），因此不使用 || true。
       - name: Compile luci-app-mt5700 (verbose)
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
-          make package/luci-app-mt5700/compile -j1 V=s || true
+          make package/luci-app-mt5700/compile -j1 V=s
 
       - name: Compile Firmware
         if: ${{ !inputs.WRT_TEST }}
@@ -405,12 +409,12 @@ jobs:
           ccache -s 2>/dev/null || true
           exit "$RC"
 
-      # ★ 借鉴原作者：使用 always() 抢救工具链缓存，防止被硬超时杀掉
+      # ★ always()：即使后续编译超时被杀，工具链缓存也抢救下来
       - name: Save Build Cache (Toolchain & ccache)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v2
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v3
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -434,7 +438,7 @@ jobs:
 
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
-            # ★ 借鉴原作者：强壮的命名与防冲突逻辑（已增强）
+            # 强壮的命名与防冲突逻辑
             SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
             SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
             SAFE_BRANCH=$(echo "$WRT_BRANCH" | tr '/ ' '__')
@@ -541,7 +545,7 @@ jobs:
             done
           done
 
-  # 缓存世代交替 Job 保持不变
+  # 缓存世代交替 Job
   cache-rollover:
     name: Roll cache generations
     needs: core
