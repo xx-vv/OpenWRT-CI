@@ -8,15 +8,19 @@ UPDATE_PACKAGE() {
 	local PKG_REPO=$2
 	local PKG_BRANCH=$3
 	local PKG_SPECIAL=$4
-	local PKG_LIST=("$PKG_NAME" $5)
+	local PKG_LIST=("$PKG_NAME" $5)  # 第5个参数为自定义名称列表
 	local REPO_NAME=${PKG_REPO#*/}
 	local REPO_PATH="./package/$REPO_NAME"
 
 	echo " "
 
+	# 删除本地可能存在的不同名称的软件包
 	for NAME in "${PKG_LIST[@]}"; do
+		# 查找匹配的目录
 		echo "Search directory: $NAME"
 		local FOUND_DIRS=$(find ./feeds/luci/ ./feeds/packages/ -maxdepth 3 -type d -iname "*$NAME*" 2>/dev/null)
+
+		# 删除找到的目录
 		if [ -n "$FOUND_DIRS" ]; then
 			while read -r DIR; do
 				rm -rf "$DIR"
@@ -27,20 +31,10 @@ UPDATE_PACKAGE() {
 		fi
 	done
 
-	# 克隆 GitHub 仓库（带重试）
-	local CLONE_OK=0
-	for i in 1 2 3; do
-		git clone --depth=1 --single-branch --branch "$PKG_BRANCH" \
-			"https://github.com/$PKG_REPO.git" "$REPO_PATH" && { CLONE_OK=1; break; }
-		echo "git clone $PKG_REPO 第 ${i} 次失败，10 秒后重试" >&2
-		sleep 10
-		rm -rf "$REPO_PATH"
-	done
-	if [ "$CLONE_OK" != "1" ]; then
-		echo "ERROR: git clone failed for $PKG_REPO (branch: $PKG_BRANCH) after 3 attempts" >&2
-		exit 1
-	fi
+	# 克隆 GitHub 仓库（原作者核心逻辑：裸 clone，失败不额外处理）
+	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git" "$REPO_PATH"
 
+	# 处理克隆的仓库
 	if [[ "$PKG_SPECIAL" == "pkg" ]]; then
 		find $REPO_PATH/*/ -maxdepth 3 -type d -iname "*$PKG_NAME*" -prune -exec cp -rf {} ./package \;
 		rm -rf $REPO_PATH
