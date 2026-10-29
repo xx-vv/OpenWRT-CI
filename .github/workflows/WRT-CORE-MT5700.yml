@@ -171,23 +171,6 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Packages.sh
           $GITHUB_WORKSPACE/Scripts/Handles.sh
 
-      - name: Setup rustup for mt5700 Rust backend
-        if: ${{ !inputs.WRT_TEST }}
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain stable
-          fi
-          export PATH="$HOME/.cargo/bin:$PATH"
-          rustup target add aarch64-unknown-linux-musl
-          rustup target list --installed | grep -qx aarch64-unknown-linux-musl
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          {
-            echo "CARGO_HOME=$HOME/.cargo"
-            echo "RUSTUP_HOME=$HOME/.rustup"
-          } >> "$GITHUB_ENV"
-
       - name: Custom Settings
         run: |
           cd ./wrt/
@@ -213,6 +196,140 @@ jobs:
             echo "::error::.config 未选中 luci-app-mt5700"
             exit 1
           fi
+          if ! grep -q 'MT5700_PREBUILT_HOOK' ./package/luci-app-mt5700/src/Makefile; then
+            echo "::error::Packages.sh 的 PREPARE_MT5700_PREBUILT 注入未生效"
+            exit 1
+          fi
+          echo "luci-app-mt5700 已选中，预编译注入已生效"
+
+      # ===== Rust 后端缓存（省 15~25 min / 次）=====
+      - name: Restore Rust Cache
+        id: rust-cache
+        if: ${{ !inputs.WRT_TEST }}
+        uses: actions/cache/restore@v4
+        with:
+          key: rust-mt5700-${{env.WRT_CACHE_KEY}}
+          restore-keys: |
+            rust-mt5700-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/mt5700-target
+
+      # ===== 交叉编译 at-webserver（替代原来的 Setup rustup）=====
+      # 核心：musl target + zig 交叉链接器（ring 等 crate 含 C 代码，musl target
+      # 自带 libc/启动对象缺失，zig cc 一次提供 libc + C 编译器）。
+      # 产物三重自检（aarch64 / static / no dynamic）防止产出不可运行固件。
+      - name: Cross Compile Rust Backend for luci-app-mt5700
+        if: ${{ !inputs.WRT_TEST }}
+        run: |
+          cd ./wrt/
+
+          # 1. 架构守卫
+          ARCH_PACKAGES=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"/\1/p' .config | head -1)
+          if [ -z "$ARCH_PACKAGES" ]; then
+            echo "::error::.config 未解析出 CONFIG_TARGET_ARCH_PACKAGES"
+            exit 1
+          fi
+          case "$ARCH_PACKAGES" in
+            aarch64_cortex-a53)
+              RUST_TARGET=aarch64-unknown-linux-musl
+              ZIG_TARGET=aarch64-linux-musl
+              ;;
+            *)
+              echo "::error::本步骤仅覆盖 aarch64_cortex-a53（TR3000 是 Filogic），当前 $ARCH_PACKAGES"
+              exit 1
+              ;;
+          esac
+          echo "Rust 目标：$RUST_TARGET（ARCH_PACKAGES=$ARCH_PACKAGES）"
+
+          # 2. 准备 Rust 工具链
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            . "$HOME/.cargo/env"
+          fi
+          rustup target add "$RUST_TARGET"
+          cargo --version
+          rustc --version
+
+          # 3. 准备 zig 交叉链接器（pip 装 ziglang 官方 PyPI 包，避开 ziglang.org / GH Release 抽风）
+          python3 -m venv /tmp/zig-venv
+          /tmp/zig-venv/bin/pip install --quiet "ziglang==0.13.0"
+          ZIG="$(/tmp/zig-venv/bin/python -c 'import os, ziglang; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
+          chmod +x "$ZIG"
+          "$ZIG" version
+
+          # 4. 包装脚本：过滤 cargo 传入的 --target，改成 zig 的 target
+          export ZIG ZIG_TARGET
+          mkdir -p /tmp/zig-wrap
+          cat > /tmp/zig-wrap/zig-cc <<'WRAP'
+          #!/usr/bin/env bash
+          args=()
+          for a in "$@"; do
+            case "$a" in
+              --target=*|*--fix-cortex-a53*) ;;
+              *) args+=("$a") ;;
+            esac
+          done
+          exec "$ZIG" cc -target "$ZIG_TARGET" "${args[@]}"
+          WRAP
+          cat > /tmp/zig-wrap/zig-ar <<'WRAP'
+          #!/usr/bin/env bash
+          args=()
+          for a in "$@"; do
+            case "$a" in
+              --target=*) ;;
+              *) args+=("$a") ;;
+            esac
+          done
+          exec "$ZIG" ar "${args[@]}"
+          WRAP
+          chmod +x /tmp/zig-wrap/zig-cc /tmp/zig-wrap/zig-ar
+
+          # 5. 交叉编译 at-webserver
+          cd package/luci-app-mt5700/src/rust
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/tmp/zig-wrap/zig-cc
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_AR=/tmp/zig-wrap/zig-ar
+          export CC_aarch64_unknown_linux_musl=/tmp/zig-wrap/zig-cc
+          export AR_aarch64_unknown_linux_musl=/tmp/zig-wrap/zig-ar
+          export RUSTFLAGS="-C link-self-contained=no"
+          CARGO_TARGET_DIR=/tmp/mt5700-target \
+            cargo build --release --locked --target "$RUST_TARGET"
+
+          # 6. 三重自检（不可省：防"能装但运行时报 Exec format error"）
+          BIN="/tmp/mt5700-target/$RUST_TARGET/release/at-webserver"
+          file "$BIN"
+          file "$BIN" | grep -q 'ARM aarch64' || { echo "::error::后端不是 aarch64 ELF"; exit 1; }
+          file "$BIN" | grep -q 'statically linked' || { echo "::error::后端不是静态链接"; exit 1; }
+          readelf -d "$BIN" | grep -q 'no dynamic section' || {
+            echo "::error::后端带动态段，固件缺少 musl 动态库时无法启动"
+            readelf -d "$BIN"
+            exit 1
+          }
+          BIN_SIZE=$(stat -c %s "$BIN")
+          if [ "$BIN_SIZE" -lt 1000000 ]; then
+            echo "::error::后端体积异常（$BIN_SIZE 字节），疑似构建未完成"
+            exit 1
+          fi
+
+          # 7. 放到 src/prebuilt/ 供 Makefile hook 使用
+          mkdir -p ../prebuilt
+          cp -f "$BIN" ../prebuilt/at-webserver
+          chmod 0755 ../prebuilt/at-webserver
+          ls -l ../prebuilt/
+          echo "luci-app-mt5700 预编译后端就绪：$BIN_SIZE 字节"
+
+      # ★ always()：即使后续编译超时被杀，Rust 产物也提前落盘
+      - name: Save Rust Cache
+        if: ${{ always() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          key: rust-mt5700-${{env.WRT_CACHE_KEY}}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/mt5700-target
 
       - name: Download Packages
         if: ${{ !inputs.WRT_TEST }}
@@ -318,13 +435,12 @@ jobs:
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
             # ★ 借鉴原作者：强壮的命名与防冲突逻辑（已增强）
-            # 安全化：把可能出现在文件名中的非法字符替换掉
             SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
             SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
             SAFE_BRANCH=$(echo "$WRT_BRANCH" | tr '/ ' '__')
             SAFE_TARGET=$(echo "$WRT_TARGET" | tr '/ ' '__')
             SAFE_WIFI="$WRT_WIFI"
-            [ "$SAFE_WIFI" = "none" ] && SAFE_WIFI=""   # none 不参与命名
+            [ "$SAFE_WIFI" = "none" ] && SAFE_WIFI=""
             SAFE_DATE="$WRT_DATE"
 
             for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
@@ -347,7 +463,6 @@ jobs:
                 *)              TYPE="" ;;
               esac
 
-              # 组装基础名：只拼接非空字段，避免出现 "--" 或 "-none"
               PARTS=("$SAFE_NAME" "$SAFE_INFO" "$SAFE_BRANCH" "$SAFE_TARGET")
               [ -n "$SAFE_WIFI" ] && PARTS+=("$SAFE_WIFI")
               [ -n "$TYPE" ]      && PARTS+=("$TYPE")
@@ -401,6 +516,8 @@ jobs:
 
           内核版本：${{env.WRT_KVER}}
           插件列表：${{env.WRT_LIST}}
+
+          MT5700 插件版本：${{env.MT5700_VERSION}}
           EOF
           )
 
