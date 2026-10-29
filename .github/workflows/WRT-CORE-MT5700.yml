@@ -231,8 +231,6 @@ jobs:
 
       - name: Compile luci-app-mt5700 (verbose)
         if: ${{ !inputs.WRT_TEST }}
-        env:
-          RUSTFLAGS: "-C link-self-contained=yes"
         run: |
           cd ./wrt/
           make package/luci-app-mt5700/compile -j1 V=s || true
