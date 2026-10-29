@@ -52,3 +52,16 @@ if [[ "${WRT_TARGET^^}" == *"QUALCOMMAX"* ]]; then
 		echo "qualcommax set up nowifi successfully!"
 	fi
 fi
+
+#修复 Rust 编译失败（feeds 里的 rust 包若被触发，ci-llvm=true 会拉 LLVM 源码现场编，
+# 1~2h 且 20GB 磁盘，CI 必超时；改成 false 走预编译 LLVM 分支）
+FEEDS_PACKAGES="./feeds/packages"
+RUST_FILE="$(find "$FEEDS_PACKAGES" -maxdepth 3 -type f -wholename '*/rust/Makefile' -print -quit 2>/dev/null)"
+if [ -f "$RUST_FILE" ]; then
+	echo " "
+	if sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"; then
+		echo "rust has been fixed!"
+	else
+		echo "rust fix failed; continuing!"
+	fi
+fi
