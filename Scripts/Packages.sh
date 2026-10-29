@@ -31,8 +31,15 @@ UPDATE_PACKAGE() {
 		fi
 	done
 
-	# 克隆 GitHub 仓库
-	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git" $REPO_PATH
+	# 克隆 GitHub 仓库	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git" $REPO_PATH
+
+	# ★ 克隆失败即退出：避免网络瞬断/仓库不存在时留下残缺 package 树，
+	#   让后续校验或编译在缺包状态下浪费时间（日志里曾出现
+	#   "could not read Username for 'https://github.com'" 后继续跑的情况）。
+	if [ ! -d "$REPO_PATH/.git" ]; then
+		echo "ERROR: git clone failed for $PKG_REPO (branch: $PKG_BRANCH)" >&2
+		exit 1
+	fi
 
 	# 处理克隆的仓库
 	if [[ "$PKG_SPECIAL" == "pkg" ]]; then
