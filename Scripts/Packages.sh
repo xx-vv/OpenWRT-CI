@@ -64,7 +64,9 @@ UPDATE_PACKAGE "passwall2" "Openwrt-Passwall/openwrt-passwall2" "main" "pkg"
 
 UPDATE_PACKAGE "diskmanager" "4IceG/luci-app-mini-diskmanager" "main"
 UPDATE_PACKAGE "easytier" "EasyTier/luci-app-easytier" "main"
-UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
+# QModem 与 MT5700 抢同一 AT 串口，且 TR3000.txt 里所有 qmodem 配置均已注释；
+# 不再克隆，省 clone 时间。如需恢复，取消下一行注释。
+#UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "axonhub gecoosac miniupnpd sing-box luci-app-homeproxy luci-app-timewol luci-app-upnp luci-app-wolplus luci-app-wolultra"
 UPDATE_PACKAGE "vnt" "lmq8267/luci-app-vnt" "main"
 
@@ -92,6 +94,91 @@ UPDATE_PACKAGE "mt5700" "LianXia233/luci-app-mt5700" "main"
 #UPDATE_PACKAGE "mt5700m" "LianXia233/luci-app-mt5700m" "main"
 #UPDATE_PACKAGE "netmonitor" "LianXia233/luci-app-netmonitor" "main"
 #UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
+
+# ===== luci-app-mt5700 克隆结果校验 + 预编译注入 =====
+# 上游仓库结构调整、文件改名或漏推时在此尽早失败，避免数小时后才在编译阶段暴露。
+MT5700_DIR="./package/luci-app-mt5700"
+MT5700_REQUIRED="Makefile
+src/Makefile
+src/rust/Cargo.toml
+src/rust/Cargo.lock
+root/etc/init.d/at-webserver
+root/etc/config/at-webserver
+root/usr/share/rpcd/ucode/mt5700.uc
+root/usr/share/luci/menu.d/luci-app-mt5700.json
+root/usr/share/rpcd/acl.d/luci-app-mt5700.json
+htdocs/luci-static/resources/view/at-webserver/network_status.js
+po/zh_Hans/luci-app-mt5700.po"
+MT5700_MISSING=""
+while read -r MT5700_FILE; do
+	[ -z "$MT5700_FILE" ] && continue
+	[ -f "$MT5700_DIR/$MT5700_FILE" ] || MT5700_MISSING="$MT5700_MISSING $MT5700_FILE"
+done <<< "$MT5700_REQUIRED"
+if [ -n "$MT5700_MISSING" ]; then
+	echo "ERROR: LianXia233/luci-app-mt5700 仓库结构异常，缺少:$MT5700_MISSING" >&2
+	exit 1
+fi
+MT5700_VER=$(sed -n 's/^PKG_VERSION:=//p' "$MT5700_DIR/Makefile" | head -1)
+MT5700_BACKEND_VER=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$MT5700_DIR/src/rust/Cargo.toml" | head -1)
+MT5700_INFO="plugin ${MT5700_VER} / backend ${MT5700_BACKEND_VER}"
+echo "luci-app-mt5700 version: $MT5700_INFO"
+[ -n "${GITHUB_ENV:-}" ] && echo "MT5700_VERSION=$MT5700_INFO" >> "$GITHUB_ENV"
+
+# ===== 深度适配：让包在 buildroot 内使用 CI 预编译的 Rust 后端 =====
+# 固件构建阶段的 PATH 只有交叉工具链（rules.mk 里 export PATH:=$(TARGET_PATH)），
+# 既没有宿主 cargo/rustc，也不适合在 CI 里临时拉起 feeds/packages/lang/rust
+# （host rust 要现场编译 LLVM，动辄 1~2 小时且占 20GB 磁盘）。
+# 因此 WRT-CORE-MT5700.yml 在编译前用 rustup + zig 交叉编译出 aarch64 musl 静态
+# 二进制，放到 src/prebuilt/at-webserver；这里把上游 src/Makefile 的 compile 目标
+# 改成「有预编译产物就直接装，否则回退上游 cargo 构建」，install 目标无需改动。
+# 上游若调整 compile 规则，正则匹配数量校验会立刻失败，而不是静默编出旧逻辑。
+PREPARE_MT5700_PREBUILT() {
+	local MAKE_FILE="$MT5700_DIR/src/Makefile"
+
+	python3 - "$MAKE_FILE" <<'PY'
+import io
+import re
+import sys
+
+path = sys.argv[1]
+src = io.open(path, encoding='utf-8').read()
+
+if 'MT5700_PREBUILT_HOOK' in src:
+    print('luci-app-mt5700: 预编译注入已存在，跳过')
+    sys.exit(0)
+
+if re.search(r'^install:', src, re.M) is None:
+    sys.exit('ERROR: src/Makefile 缺少 install 目标，上游结构已变更，需人工复核预编译注入')
+
+new_compile = '''# ==== MT5700_PREBUILT_HOOK（本仓库深度适配，勿手改）====
+# 固件构建阶段 PATH 内没有 cargo；CI 已用 rustup + zig 交叉编译出静态后端，
+# 放在 src/prebuilt/at-webserver。存在时直接复制到 $(BIN)，否则回退上游 cargo 构建。
+compile:
+	@if [ -x "$(CURDIR)/prebuilt/at-webserver" ]; then \\
+		echo "==> [mt5700] 使用预编译后端: $(CURDIR)/prebuilt/at-webserver"; \\
+		mkdir -p "$(dir $(BIN))"; \\
+		cp -f "$(CURDIR)/prebuilt/at-webserver" "$(BIN)"; \\
+	else \\
+		echo "==> [mt5700] cargo build: ARCH=$(ARCH) ARCH_PACKAGES=$(ARCH_PACKAGES) RUST_TARGET=$(RUST_TARGET)"; \\
+		cd $(RUST_DIR) && \\
+			CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" \\
+			cargo build $(CARGO_BUILD_STD_FLAGS) --release --target $(RUST_TARGET); \\
+	fi
+	test -x "$(BIN)" || { echo "ERROR: 未产出后端二进制 $(BIN)"; exit 1; }
+	@echo "==> [mt5700] 后端二进制就绪: $(BIN)"
+
+'''
+
+patched, n = re.subn(r'(?ms)^compile:.*?(?=^install:)', new_compile, src)
+if n != 1:
+    sys.exit('ERROR: src/Makefile 的 compile 目标匹配数量为 %d（期望 1），上游结构已变更' % n)
+
+io.open(path, 'w', encoding='utf-8', newline='\n').write(patched)
+print('luci-app-mt5700: 已注入预编译后端分支')
+PY
+}
+
+PREPARE_MT5700_PREBUILT
 
 UPDATE_PACKAGE "luci-app-onliner" "xx-vv/luci-app-onliner" "main"
 #UPDATE_PACKAGE "mt5700webui" "inotdream/mt5700webui-openwrt-server" "feat/go-backend"
