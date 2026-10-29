@@ -8,40 +8,39 @@ UPDATE_PACKAGE() {
 	local PKG_REPO=$2
 	local PKG_BRANCH=$3
 	local PKG_SPECIAL=$4
-	local PKG_LIST=("$PKG_NAME" $5)  # 第5个参数为自定义名称列表
+	local PKG_LIST=("$PKG_NAME" $5)
 	local REPO_NAME=${PKG_REPO#*/}
 	local REPO_PATH="./package/$REPO_NAME"
 
 	echo " "
 
-	# 删除本地可能存在的不同名称的软件包
 	for NAME in "${PKG_LIST[@]}"; do
-		# 查找匹配的目录
 		echo "Search directory: $NAME"
 		local FOUND_DIRS=$(find ./feeds/luci/ ./feeds/packages/ -maxdepth 3 -type d -iname "*$NAME*" 2>/dev/null)
-
-		# 删除找到的目录
 		if [ -n "$FOUND_DIRS" ]; then
 			while read -r DIR; do
 				rm -rf "$DIR"
 				echo "Delete directory: $DIR"
 			done <<< "$FOUND_DIRS"
 		else
-			echo "Not fonud directory: $NAME"
+			echo "Not found directory: $NAME"
 		fi
 	done
 
-	# 克隆 GitHub 仓库	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git" $REPO_PATH
-
-	# ★ 克隆失败即退出：避免网络瞬断/仓库不存在时留下残缺 package 树，
-	#   让后续校验或编译在缺包状态下浪费时间（日志里曾出现
-	#   "could not read Username for 'https://github.com'" 后继续跑的情况）。
-	if [ ! -d "$REPO_PATH/.git" ]; then
-		echo "ERROR: git clone failed for $PKG_REPO (branch: $PKG_BRANCH)" >&2
+	# 克隆 GitHub 仓库（带重试）
+	local CLONE_OK=0
+	for i in 1 2 3; do
+		git clone --depth=1 --single-branch --branch "$PKG_BRANCH" \
+			"https://github.com/$PKG_REPO.git" "$REPO_PATH" && { CLONE_OK=1; break; }
+		echo "git clone $PKG_REPO 第 ${i} 次失败，10 秒后重试" >&2
+		sleep 10
+		rm -rf "$REPO_PATH"
+	done
+	if [ "$CLONE_OK" != "1" ]; then
+		echo "ERROR: git clone failed for $PKG_REPO (branch: $PKG_BRANCH) after 3 attempts" >&2
 		exit 1
 	fi
 
-	# 处理克隆的仓库
 	if [[ "$PKG_SPECIAL" == "pkg" ]]; then
 		find $REPO_PATH/*/ -maxdepth 3 -type d -iname "*$PKG_NAME*" -prune -exec cp -rf {} ./package \;
 		rm -rf $REPO_PATH
@@ -53,7 +52,7 @@ UPDATE_PACKAGE() {
 # UPDATE_PACKAGE "open-app-filter" "destan19/OpenAppFilter" "master" "" "luci-app-appfilter oaf" 这样会把原有的open-app-filter，luci-app-appfilter，oaf相关组件删除，不会出现coremark错误。
 
 # UPDATE_PACKAGE "包名" "项目地址" "项目分支" "pkg，可选，从大杂烩中单独提取包名插件"
-#UPDATE_PACKAGE "argon" "sbwml/luci-theme-argon" "openwrt-25.12"
+UPDATE_PACKAGE "argon" "sbwml/luci-theme-argon" "openwrt-25.12"
 UPDATE_PACKAGE "aurora" "eamonxg/luci-theme-aurora" "master"
 UPDATE_PACKAGE "aurora-config" "eamonxg/luci-app-aurora-config" "master"
 UPDATE_PACKAGE "fluent" "LazuliKao/luci-theme-fluent" "main"
