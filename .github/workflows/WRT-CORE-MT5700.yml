@@ -56,7 +56,6 @@ jobs:
         run: |
           sudo apt-get -yqq purge firefox
           sudo apt-get -yqq update
-          # 原作者建议：不做 full-upgrade，省去数分钟耗时的无用全量升级
           sudo apt-get -yqq autoclean
           sudo apt-get -yqq clean
 
@@ -114,33 +113,45 @@ jobs:
             sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
           fi
 
-          # 强制修正 toolchain 依赖顺序
-          if ! grep -q 'tools/install' toolchain/Makefile; then
-            sed -i 's|^$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk$|$(curdir)//prepare = $(STAGING_DIR)/.prepared $(TOOLCHAIN_DIR)/info.mk tools/install|' toolchain/Makefile
-            echo "Patched: toolchain/prepare now depends on tools/install"
-          fi
-
       - name: Check Scripts
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      # ★ 缓存路径包含 host*，需在恢复后做完整性校验，防止命中残缺缓存。
-      # ★ key 后缀 v4：v3 期间出现过 staging_dir/host/bin/sed 缺失导致的
-      #   lua [host] 构建失败（run 123328134659），强制换代一次干净构建。
-      # ★ restore-keys 收窄到同 hash 的 v4，不再前缀匹配旧世代缓存，
-      #   避免把上一代残缺的 host 工具目录恢复进来。
-      - name: Restore Build Cache (Toolchain & ccache)
-        id: cache-tc-restore
+      - name: Check Caches
+        id: check-cache
         if: ${{ !inputs.WRT_TEST }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v6
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
-          restore-keys: |
-            ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
+          key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
+          restore-keys: ${{env.WRT_CACHE_PREFIX}}
           path: |
             ./wrt/.ccache
-            ./wrt/staging_dir/tool*
             ./wrt/staging_dir/host*
+            ./wrt/staging_dir/tool*
+
+      - name: Update Caches
+        if: ${{ !inputs.WRT_TEST }}
+        run: |
+          if [ -d "./wrt/staging_dir" ]; then
+            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
+              find "$DIR" -type f -exec touch {} +
+            done
+
+            mkdir -p ./wrt/tmp && echo "1" > ./wrt/tmp/.build
+
+            echo "toolchain skipped done!"
+          else
+            echo "caches missed!"
+          fi
+
+          if [ "${{ steps.check-cache.outputs.cache-hit }}" != 'true' ]; then
+            CACHE_LIST=$(gh cache list --json id --key "$WRT_CACHE_PREFIX" --jq '.[].id' 2>/dev/null)
+            for CACHE_ID in $CACHE_LIST; do
+              gh cache delete "$CACHE_ID"
+            done
+
+            echo "caches cleanup done!"
+          fi
 
       - name: Restore Build Cache (Download Packages)
         id: cache-dl-restore
@@ -152,33 +163,6 @@ jobs:
             ${{env.WRT_CACHE_PREFIX}}-dl-
           path: |
             ./wrt/dl
-
-      - name: Prepare Restored Build Cache
-        if: ${{ !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-matched-key != '' }}
-        run: |
-          find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
-            find "$DIR" -type f -exec touch {} +
-          done
-          mkdir -p ./wrt/tmp
-          echo "1" > ./wrt/tmp/.build
-          echo "restored build cache: ${{steps.cache-tc-restore.outputs.cache-matched-key}}"
-
-      # ★ 完整性校验：staging_dir/host/bin/sed 是 tools/ 阶段的核心产物，
-      #   缺它会导致后续 host 包（如 lua [host]）在 configure 阶段 Error 127。
-      #   恢复的缓存若缺 sed，说明该缓存来自一次被中断/不完整的构建；
-      #   此时删掉 host/hostpkg staging 与 tmp/.build 标记，让 tools/install 重跑。
-      - name: Validate Host Tools
-        if: ${{ !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-matched-key != '' }}
-        run: |
-          if [ ! -x "./wrt/staging_dir/host/bin/sed" ]; then
-            echo "::warning::staging_dir/host/bin/sed missing, purging broken host staging"
-            rm -rf ./wrt/staging_dir/host
-            rm -rf ./wrt/staging_dir/hostpkg
-            rm -f ./wrt/tmp/.build
-            echo "HOST_STAGING_PURGED=1" >> "$GITHUB_ENV"
-          else
-            echo "staging_dir/host/bin/sed present, host tools cache looks complete"
-          fi
 
       - name: Update Feeds
         run: |
@@ -203,30 +187,34 @@ jobs:
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc)
-          # ★ 只删构建产物，不再 make clean：make clean 会动 staging_dir，
-          #   在恢复缓存的构建里若 host staging 本身不完整，clean 无法修复它，
-          #   反而让后续编译在「看似有缓存、实际缺文件」的状态下继续跑。
-          #   host 工具完整性由 Validate Host Tools 步骤负责。
-          rm -rf ./build_dir ./bin
 
-      - name: Verify luci-app-mt5700 selected
-        run: |
-          cd ./wrt/
-          if [ ! -d ./package/luci-app-mt5700 ]; then
-            echo "::error::package/luci-app-mt5700 不存在"
+          # 模组插件互斥校验
+          NEW_PLUGIN=$(grep -c '^CONFIG_PACKAGE_luci-app-mt5700=y$' .config || true)
+          OLD_PLUGIN=$(grep -c '^CONFIG_PACKAGE_luci-app-mt5700m=y$' .config || true)
+          if [ "$NEW_PLUGIN" -gt 0 ] && [ "$OLD_PLUGIN" -gt 0 ]; then
+            echo "::error::同一配置同时启用了 luci-app-mt5700 与 luci-app-mt5700m；两者都独占模组 AT 串口，只能二选一"
             exit 1
           fi
-          if ! grep -qx 'CONFIG_PACKAGE_luci-app-mt5700=y' ./.config; then
-            echo "::error::.config 未选中 luci-app-mt5700"
+          if [ "$NEW_PLUGIN" -ne 1 ] || [ "$OLD_PLUGIN" -ne 0 ]; then
+            echo "::error::期望启用 luci-app-mt5700，实际新插件 $NEW_PLUGIN / 旧插件 $OLD_PLUGIN"
             exit 1
           fi
+          if ! grep -q '^CONFIG_PACKAGE_luci-i18n-mt5700-zh-cn=y$' .config; then
+            echo "::error::缺少配套语言包 luci-i18n-mt5700-zh-cn"
+            exit 1
+          fi
+          echo "luci-app-mt5700 已选中，语言包已启用"
+
           if ! grep -q 'MT5700_PREBUILT_HOOK' ./package/luci-app-mt5700/src/Makefile; then
             echo "::error::Packages.sh 的 PREPARE_MT5700_PREBUILT 注入未生效"
             exit 1
           fi
-          echo "luci-app-mt5700 已选中，预编译注入已生效"
 
-      # ===== Rust 后端缓存（省 15~25 min / 次）=====
+          # 与成功版本一致：make clean 清掉旧标记，让 make 重新走 tools/install，
+          # 保证 staging_dir/host/bin/sed 等 host 工具在编译阶段一定存在。
+          make clean -j$(nproc)
+
+      # ===== Rust 后端缓存 =====
       - name: Restore Rust Cache
         id: rust-cache
         if: ${{ !inputs.WRT_TEST }}
@@ -240,16 +228,11 @@ jobs:
             ~/.cargo/git
             /tmp/mt5700-target
 
-      # ===== 交叉编译 at-webserver（替代原来的 Setup rustup）=====
-      # 核心：musl target + zig 交叉链接器（ring 等 crate 含 C 代码，musl target
-      # 自带 libc/启动对象缺失，zig cc 一次提供 libc + C 编译器）。
-      # 产物三重自检（aarch64 / static / no dynamic）防止产出不可运行固件。
       - name: Cross Compile Rust Backend for luci-app-mt5700
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
 
-          # 1. 架构守卫
           ARCH_PACKAGES=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"/\1/p' .config | head -1)
           if [ -z "$ARCH_PACKAGES" ]; then
             echo "::error::.config 未解析出 CONFIG_TARGET_ARCH_PACKAGES"
@@ -261,13 +244,12 @@ jobs:
               ZIG_TARGET=aarch64-linux-musl
               ;;
             *)
-              echo "::error::本步骤仅覆盖 aarch64_cortex-a53（TR3000 是 Filogic），当前 $ARCH_PACKAGES"
+              echo "::error::本步骤仅覆盖 aarch64_cortex-a53，当前 $ARCH_PACKAGES"
               exit 1
               ;;
           esac
           echo "Rust 目标：$RUST_TARGET（ARCH_PACKAGES=$ARCH_PACKAGES）"
 
-          # 2. 准备 Rust 工具链
           if ! command -v cargo >/dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
@@ -277,14 +259,12 @@ jobs:
           cargo --version
           rustc --version
 
-          # 3. 准备 zig 交叉链接器（pip 装 ziglang 官方 PyPI 包，避开 ziglang.org / GH Release 抽风）
           python3 -m venv /tmp/zig-venv
           /tmp/zig-venv/bin/pip install --quiet "ziglang==0.13.0"
           ZIG="$(/tmp/zig-venv/bin/python -c 'import os, ziglang; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
           chmod +x "$ZIG"
           "$ZIG" version
 
-          # 4. 包装脚本：过滤 cargo 传入的 --target，改成 zig 的 target
           export ZIG ZIG_TARGET
           mkdir -p /tmp/zig-wrap
           cat > /tmp/zig-wrap/zig-cc <<'WRAP'
@@ -311,7 +291,6 @@ jobs:
           WRAP
           chmod +x /tmp/zig-wrap/zig-cc /tmp/zig-wrap/zig-ar
 
-          # 5. 交叉编译 at-webserver
           cd package/luci-app-mt5700/src/rust
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/tmp/zig-wrap/zig-cc
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_AR=/tmp/zig-wrap/zig-ar
@@ -321,30 +300,27 @@ jobs:
           CARGO_TARGET_DIR=/tmp/mt5700-target \
             cargo build --release --locked --target "$RUST_TARGET"
 
-          # 6. 三重自检（不可省：防"能装但运行时报 Exec format error"）
           BIN="/tmp/mt5700-target/$RUST_TARGET/release/at-webserver"
           file "$BIN"
           file "$BIN" | grep -q 'ARM aarch64' || { echo "::error::后端不是 aarch64 ELF"; exit 1; }
           file "$BIN" | grep -q 'statically linked' || { echo "::error::后端不是静态链接"; exit 1; }
           readelf -d "$BIN" | grep -q 'no dynamic section' || {
-            echo "::error::后端带动态段，固件缺少 musl 动态库时无法启动"
+            echo "::error::后端带动态段"
             readelf -d "$BIN"
             exit 1
           }
           BIN_SIZE=$(stat -c %s "$BIN")
           if [ "$BIN_SIZE" -lt 1000000 ]; then
-            echo "::error::后端体积异常（$BIN_SIZE 字节），疑似构建未完成"
+            echo "::error::后端体积异常（$BIN_SIZE 字节）"
             exit 1
           fi
 
-          # 7. 放到 src/prebuilt/ 供 Makefile hook 使用
           mkdir -p ../prebuilt
           cp -f "$BIN" ../prebuilt/at-webserver
           chmod 0755 ../prebuilt/at-webserver
           ls -l ../prebuilt/
           echo "luci-app-mt5700 预编译后端就绪：$BIN_SIZE 字节"
 
-      # ★ always()：即使后续编译超时被杀，Rust 产物也提前落盘
       - name: Save Rust Cache
         if: ${{ always() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -361,7 +337,6 @@ jobs:
           cd ./wrt/
           make download -j$(nproc) || make download -j1
 
-      # ★ 下载完立刻存 dl 缓存，哪怕后面编译超时也不亏
       - name: Save Build Cache (Download Packages)
         if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -369,14 +344,6 @@ jobs:
           key: ${{env.WRT_CACHE_PREFIX}}-dl-${{env.WRT_HASH}}
           path: |
             ./wrt/dl
-
-      # 单独编译 luci-app-mt5700 做快速诊断：注入与 prebuilt 都就位时几秒钟完成，
-      # 若失败能立即定位到这一步（而不是等全量 make），因此不使用 || true。
-      - name: Compile luci-app-mt5700 (verbose)
-        if: ${{ !inputs.WRT_TEST }}
-        run: |
-          cd ./wrt/
-          make package/luci-app-mt5700/compile -j1 V=s
 
       - name: Compile Firmware
         if: ${{ !inputs.WRT_TEST }}
@@ -431,14 +398,11 @@ jobs:
           ccache -s 2>/dev/null || true
           exit "$RC"
 
-      # ★ always()：即使后续编译超时被杀，工具链缓存也抢救下来
-      # ★ key 与 restore 同步为 v4；HOST_STAGING_PURGED=1 时跳过保存，
-      #   避免把刚清空的 host staging 以「完整缓存」身份写回。
       - name: Save Build Cache (Toolchain & ccache)
-        if: ${{ always() && !inputs.WRT_TEST && steps.cache-tc-restore.outputs.cache-hit != 'true' && env.HOST_STAGING_PURGED != '1' }}
+        if: ${{ always() && !inputs.WRT_TEST && steps.check-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}-v4
+          key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -462,7 +426,6 @@ jobs:
 
             find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
-            # 强壮的命名与防冲突逻辑
             SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
             SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
             SAFE_BRANCH=$(echo "$WRT_BRANCH" | tr '/ ' '__')
@@ -569,7 +532,6 @@ jobs:
             done
           done
 
-  # 缓存世代交替 Job
   cache-rollover:
     name: Roll cache generations
     needs: core
@@ -587,9 +549,9 @@ jobs:
       - name: Roll Build Cache
         run: |
           set -euo pipefail
-          CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
+          CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-${GITHUB_SHA}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
           if [ -n "$CURRENT_TC_KEYS" ]; then
-            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-" --ref "$GITHUB_REF" --limit 9999 --json id,key --jq '.[] | [.id, .key] | @tsv' |
               while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
                 [ -n "$CACHE_ID" ] || continue
                 [[ "$CACHE_KEY" == *"${GITHUB_SHA}"* ]] && continue
