@@ -18,7 +18,6 @@ WIFI_2G_MODE=AX
 WIFI_5G_MODE=AX
 WIFI_2G_WIDTH=40
 WIFI_5G_WIDTH=160
-# 是否把 SSID 拆成 "<SSID>-2.4G" / "<SSID>-5G"
 WIFI_SSID_SPLIT=false
 
 # ================= CUDY TR3000（WiFi6 / 双频 AX）=================
