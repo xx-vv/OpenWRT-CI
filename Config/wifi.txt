@@ -3,7 +3,6 @@
 # 优先级：workflow 显式传入 WRT_* > 机型专属段 > 全局段 > Settings.sh 内置兜底
 # 键名前缀 = 设备键（配置文件首段，去非字母数字转大写）
 # 例：TR3000-immortalwrt -> TR3000；GL-MT3600BE-xxx -> GLMT3600BE
-# 注意：本文件被 source 解析，值请勿包含未转义空格或 #（行内注释）
 
 # ================= 全局兜底 =================
 LAN_IP=192.168.10.1
@@ -18,7 +17,6 @@ WIFI_2G_MODE=AX
 WIFI_5G_MODE=AX
 WIFI_2G_WIDTH=40
 WIFI_5G_WIDTH=160
-WIFI_SSID_SPLIT=false
 
 # ================= CUDY TR3000（WiFi6 / 双频 AX）=================
 TR3000_LAN_IP=192.168.30.1
@@ -32,7 +30,6 @@ TR3000_WIFI_2G_MODE=AX
 TR3000_WIFI_5G_MODE=AX
 TR3000_WIFI_2G_WIDTH=40
 TR3000_WIFI_5G_WIDTH=160
-TR3000_WIFI_SSID_SPLIT=true
 
 # ================= GL-MT3600BE（WiFi7 / 双频 BE，国内无 6G）=================
 GLMT3600BE_LAN_IP=192.168.8.1
@@ -46,4 +43,3 @@ GLMT3600BE_WIFI_2G_MODE=BE
 GLMT3600BE_WIFI_5G_MODE=BE
 GLMT3600BE_WIFI_2G_WIDTH=40
 GLMT3600BE_WIFI_5G_WIDTH=160
-GLMT3600BE_WIFI_SSID_SPLIT=true
