@@ -8,6 +8,7 @@ on:
     inputs:
       WRT_CONFIG: { required: true, type: string }
       WRT_THEME: { required: true, type: string }
+      # 下面这 5 个改成 false 和 ""
       WRT_NAME: { required: false, type: string, default: "" }
       WRT_SSID: { required: false, type: string, default: "" }
       WRT_WORD: { required: false, type: string, default: "" }
