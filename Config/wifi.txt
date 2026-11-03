@@ -1,8 +1,17 @@
 # SPDX-License-Identifier: MIT
 # ===== 机型默认值：局域网 / 无线 =====
 # 优先级：workflow 显式传入 WRT_* > 机型专属段 > 全局段 > Settings.sh 内置兜底
-# 键名前缀 = 设备键（配置文件首段，去非字母数字转大写）
-# 例：TR3000-immortalwrt -> TR3000；GL-MT3600BE-xxx -> GLMT3600BE
+# 键名前缀 = 设备键（WRT_CONFIG 去掉最后一个 -发行版 后缀，去非字母数字后转大写）
+# 例：TR3000-immortalwrt -> TR3000
+#
+# 说明：
+# - 本方案不使用 Router Tool 的 wireless defaults（它强制 country=US、
+#   encryption=psk2+ccmp、2.4G 20MHz、5G 后缀为 5.2G/5.8G）。
+#   所有无线参数由 Settings.sh 生成的 10-wifi-defaults 全量写入。
+#   因此 WIFI_COUNTRY 可自由设为 CN 或 US，不会被覆盖。
+# - WIFI_*_MODE 目前仅支持 AX（WiFi6→HE）和 BE（WiFi7→EHT）；
+#   加 AC（WiFi5→VHT）/ N（WiFi4→HT）机型需同步扩展 Settings.sh 的 case 分支。
+# - LAN_PASSWORD 仅用于构建信息展示，不会写入实际 root 密码。
 
 # ================= 全局兜底 =================
 LAN_IP=192.168.10.1
@@ -12,7 +21,7 @@ HOST_NAME=OWRT
 WIFI_SSID=OWRT
 WIFI_PASSWORD=12345678
 WIFI_ENCRYPTION=sae-mixed
-WIFI_COUNTRY=CN
+WIFI_COUNTRY=US
 WIFI_2G_MODE=AX
 WIFI_5G_MODE=AX
 WIFI_2G_WIDTH=40
@@ -25,21 +34,8 @@ TR3000_HOST_NAME=CUDY
 TR3000_WIFI_SSID=TR3000
 TR3000_WIFI_PASSWORD=zxcvbnm1234
 TR3000_WIFI_ENCRYPTION=sae-mixed
-TR3000_WIFI_COUNTRY=CN
+TR3000_WIFI_COUNTRY=US
 TR3000_WIFI_2G_MODE=AX
 TR3000_WIFI_5G_MODE=AX
 TR3000_WIFI_2G_WIDTH=40
 TR3000_WIFI_5G_WIDTH=160
-
-# ================= GL-MT3600BE（WiFi7 / 双频 BE，国内无 6G）=================
-GLMT3600BE_LAN_IP=192.168.8.1
-GLMT3600BE_LAN_PASSWORD=无
-GLMT3600BE_HOST_NAME=GL-MT3600BE
-GLMT3600BE_WIFI_SSID=MT3600BE
-GLMT3600BE_WIFI_PASSWORD=12345678
-GLMT3600BE_WIFI_ENCRYPTION=sae-mixed
-GLMT3600BE_WIFI_COUNTRY=CN
-GLMT3600BE_WIFI_2G_MODE=BE
-GLMT3600BE_WIFI_5G_MODE=BE
-GLMT3600BE_WIFI_2G_WIDTH=40
-GLMT3600BE_WIFI_5G_WIDTH=160
