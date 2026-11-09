@@ -224,7 +224,14 @@ jobs:
           fi
 
           if [ "${{ steps.check-cache.outputs.cache-hit }}" != 'true' ]; then
-            CACHE_LIST=$(gh cache list --json id --key "$WRT_CACHE_PREFIX" --jq '.[].id' 2>/dev/null)
+            # 只清理 toolchain/ccache 旧代际，排除 -dl- 前缀。
+            # gh cache list --key 是前缀匹配：WRT_CACHE_PREFIX 同时命中
+            #   prefix-<hash>（toolchain）与 prefix-dl-<hash>（源码包）。
+            # 若在这里一并删除，下一次 Restore Build Cache (Download Packages)
+            # 就会 miss，导致全量重下载源码包——正好抵消 dl 缓存的意义。
+            # -dl- 旧代际由独立 job cache-rollover 负责清理。
+            CACHE_LIST=$(gh cache list --json id,key --key "$WRT_CACHE_PREFIX" \
+              --jq '.[] | select(.key | contains("-dl-") | not) | .id' 2>/dev/null)
             for CACHE_ID in $CACHE_LIST; do
               gh cache delete "$CACHE_ID"
             done
@@ -275,15 +282,21 @@ jobs:
           test -x root/usr/libexec/at-webserver/on-uplink.sh
 
           echo "==> Shell 语法检查"
+          # 核心文件缺失必须失败：冒烟测试的意义就是尽早暴露克隆/注入失败，
+          # 不能像 [ -f ] && 那样在文件缺失时静默返回 0。
           for SH in \
             root/etc/init.d/at-webserver \
             root/etc/uci-defaults/at-webserver \
             root/etc/hotplug.d/iface/99-at-webserver \
             root/etc/hotplug.d/usb/99-at-webserver \
-            root/usr/libexec/at-webserver/on-uplink.sh \
-            tests/iface/interface-selection.sh; do
-            [ -f "$SH" ] && sh -n "$SH"
+            root/usr/libexec/at-webserver/on-uplink.sh; do
+            test -f "$SH" || { echo "::error::missing $SH"; exit 1; }
+            sh -n "$SH"
           done
+          # 需要真机 uci 环境，仅做可选语法检查
+          if [ -f tests/iface/interface-selection.sh ]; then
+            sh -n tests/iface/interface-selection.sh
+          fi
 
           echo "==> LuCI JavaScript 语法检查"
           find htdocs -type f -name '*.js' -print0 | xargs -0 -n1 node --check
@@ -300,7 +313,8 @@ jobs:
             tabmenu-test.js \
             ucode-json-test.js \
             mock-modem/temp-level-test.js; do
-            [ -f "tests/$T" ] && node "tests/$T"
+            test -f "tests/$T" || { echo "::error::missing tests/$T"; exit 1; }
+            node "tests/$T"
           done
 
           echo "==> JSON 元数据校验"
@@ -394,12 +408,28 @@ jobs:
           rm -rf ./staging_dir/host ./tmp
           make tools/install -j$(nproc)
 
+      - name: Rust Cache Key
+        # 缓存键只依赖 Cargo.lock：只改业务代码、不改依赖树的重复构建，
+        # cargo 命中 registry/git 索引与 target 目录后只重编 crate 自身，
+        # 不再整棵 Tokio + rustls + ring 依赖树重来。
+        # 用 Cargo.lock 的 sha256 而非 commit hash：后者每次 push 都变，
+        # 会把缓存命中率压到接近 0。
+        if: ${{ !inputs.WRT_TEST }}
+        run: |
+          cd ./wrt/
+          LOCK=package/luci-app-mt5700/src/rust/Cargo.lock
+          if [ ! -f "$LOCK" ]; then
+            echo "::error::$LOCK 不存在（Custom Packages 未成功？），无法计算 Rust 缓存键"
+            exit 1
+          fi
+          echo "RUST_LOCK_HASH=$(sha256sum "$LOCK" | cut -c1-24)" >> "$GITHUB_ENV"
+
       - name: Restore Rust Cache
         id: rust-cache
         if: ${{ !inputs.WRT_TEST }}
         uses: actions/cache/restore@v4
         with:
-          key: rust-mt5700-${{env.WRT_CACHE_KEY}}
+          key: rust-mt5700-${{env.RUST_LOCK_HASH}}
           restore-keys: |
             rust-mt5700-
           path: |
@@ -481,7 +511,10 @@ jobs:
           export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_AR=/tmp/zig-wrap/zig-ar
           export CC_aarch64_unknown_linux_musl=/tmp/zig-wrap/zig-cc
           export AR_aarch64_unknown_linux_musl=/tmp/zig-wrap/zig-ar
-          export RUSTFLAGS="-C link-self-contained=no"
+          # target-cpu=cortex-a53 与固件 ARCH_PACKAGES=aarch64_cortex-a53 对齐
+          # （OpenWrt 官方软件包同样以 cortex-a53 为基线）；-C link-self-contained=no
+          # 让 zig cc 提供 libc 与启动对象。
+          export RUSTFLAGS="-C link-self-contained=no -C target-cpu=cortex-a53"
           # Tokio + rustls + ring 依赖树的下载与 zig 链接最重，挂起时收束并重试一次
           CARGO_TARGET_DIR=/tmp/mt5700-target timeout --kill-after=60 1800 \
             cargo build --release --locked --target "$RUST_TARGET" \
@@ -513,7 +546,7 @@ jobs:
         if: ${{ always() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: rust-mt5700-${{env.WRT_CACHE_KEY}}
+          key: rust-mt5700-${{env.RUST_LOCK_HASH}}
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -549,7 +582,8 @@ jobs:
           export CCACHE_COMPRESS=true
           ccache -z 2>/dev/null || true
 
-          set +e -o pipefail
+          set +e
+          set -o pipefail
           # 编译期偶有按需补下载源码包，与 Download Packages 同样的挂起风险，
           # 首轮 -j$(nproc) 用 timeout 收束（基准 ~35 分钟），失败降级 -j1 V=s
           # 从断点续编并打印详细日志。
@@ -625,7 +659,7 @@ jobs:
             echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
             echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
 
-            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} + || true
 
             SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
             SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
@@ -678,7 +712,7 @@ jobs:
               mv -f "$FILE" "./upload/$NEW_FILE"
             done
 
-            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
+            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \; || true
             rm -rf ./build_dir ./bin
           fi
 
@@ -736,6 +770,17 @@ jobs:
               sleep 5
             done
           done
+
+      - name: Upload Build Log on Failure
+        # 编译失败时保留完整日志：runner 被环境回收后（2026-11-06 事故）
+        # job 日志端点会返回 404，只有 artifact 能留下来复盘。
+        if: failure() && env.WRT_TEST != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ env.WRT_CONFIG }}-${{ env.WRT_DATE }}
+          path: ./wrt/build.log
+          if-no-files-found: warn
+          retention-days: 7
 
   cache-rollover:
     name: Roll cache generations
