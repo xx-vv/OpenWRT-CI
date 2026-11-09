@@ -2,14 +2,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 VIKINGYFY
 
-FEEDS_PATH="./feeds"
 PACKAGE_PATH="./package"
 
 #修补命令统一入口：FIX <名称> <守卫目录> <命令...>
 #守卫目录不存在时直接跳过，保证在 bash -e 下不中断
 FIX() {
-	local NAME=$1
-	local GUARD=$2
+	local NAME="$1"
+	local GUARD="$2"
 	shift 2
 
 	[ -d "$GUARD" ] || return 0
@@ -33,7 +32,7 @@ FIX "theme-aurora" "$PACKAGE_PATH/luci-app-aurora-config" find \
 	"s/nav_type '.*'/nav_type 'dropdown'/g; s/struct_radius_base '.*'/struct_radius_base '0.125rem'/g" {} +
 
 #修改vantage进度条标签字体（anothaDev/luci-theme-vantage#52）
-VANTAGE_CSS="$(find "$PKG_PATH/luci-theme-vantage" -maxdepth 8 -type f \
+VANTAGE_CSS="$(find "$PACKAGE_PATH/luci-theme-vantage" -maxdepth 8 -type f \
 	-path '*/htdocs/luci-static/vantage/vantage.css' -print -quit 2>/dev/null)"
 if [ -n "$VANTAGE_CSS" ]; then
 	echo " "
