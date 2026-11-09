@@ -33,9 +33,22 @@ FIX "theme-aurora" "$PACKAGE_PATH/luci-app-aurora-config" find \
 	"s/nav_type '.*'/nav_type 'dropdown'/g; s/struct_radius_base '.*'/struct_radius_base '0.125rem'/g" {} +
 
 #修改vantage进度条标签字体（anothaDev/luci-theme-vantage#52）
-FIX "theme-vantage" "$PACKAGE_PATH/luci-theme-vantage" sed -i \
-	-e '/^\/\* progress bars: thin track/,$ { /^\.cbi-progressbar::before {/,/^}/ { s/^[[:space:]]*font: 500 var(--fs-micro)\/1\.2 var(--mono);/\tfont: inherit; line-height: normal;/; } }' \
-	"$PACKAGE_PATH/luci-theme-vantage/luci-theme-vantage/htdocs/luci-static/vantage/vantage.css"
+VANTAGE_CSS="$(find "$PKG_PATH/luci-theme-vantage" -maxdepth 8 -type f \
+	-path '*/htdocs/luci-static/vantage/vantage.css' -print -quit 2>/dev/null)"
+if [ -n "$VANTAGE_CSS" ]; then
+	echo " "
+	VANTAGE_BEFORE="$(grep -c 'font: inherit; line-height: normal;' "$VANTAGE_CSS" || true)"
+	sed -i -e '/^\/\* progress bars: thin track/,$ { /^\.cbi-progressbar::before {/,/^}/ { s/^[[:space:]]*font: 500 var(--fs-micro)\/1\.2 var(--mono);/\tfont: inherit; line-height: normal;/; } }' \
+		"$VANTAGE_CSS"
+	VANTAGE_AFTER="$(grep -c 'font: inherit; line-height: normal;' "$VANTAGE_CSS" || true)"
+	if [ "${VANTAGE_AFTER:-0}" -gt "${VANTAGE_BEFORE:-0}" ]; then
+		echo "theme-vantage progress label font has been fixed!"
+	elif [ "${VANTAGE_AFTER:-0}" -gt 0 ]; then
+		echo "theme-vantage progress label font already patched, skip!"
+	else
+		echo "theme-vantage progress label rule not matched (upstream CSS changed?), continuing!"
+	fi
+fi
 
 #修改mini-diskmanager菜单位置
 FIX "mini-diskmanager" "$PACKAGE_PATH/luci-app-mini-diskmanager" sed -i "s/services/system/g" \
