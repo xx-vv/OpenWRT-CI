@@ -270,16 +270,21 @@ jobs:
           cd ./wrt/package/luci-app-mt5700
 
           echo "==> 结构校验（含本仓库深度适配注入）"
-          test -f src/Makefile
-          test -f src/rust/Cargo.toml
-          test -f src/rust/Cargo.lock
-          grep -q 'MT5700_PREBUILT_HOOK' src/Makefile
-          grep -q 'at-webserver-rust' src/Makefile
-          test -x root/etc/init.d/at-webserver
-          test -x root/etc/uci-defaults/at-webserver
-          test -x root/etc/hotplug.d/iface/99-at-webserver
-          test -x root/etc/hotplug.d/usb/99-at-webserver
-          test -x root/usr/libexec/at-webserver/on-uplink.sh
+          test -f src/Makefile || { echo "::error::missing src/Makefile"; exit 1; }
+          test -f src/rust/Cargo.toml || { echo "::error::missing src/rust/Cargo.toml"; exit 1; }
+          test -f src/rust/Cargo.lock || { echo "::error::missing src/rust/Cargo.lock"; exit 1; }
+          grep -q 'MT5700_PREBUILT_HOOK' src/Makefile || { echo "::error::src/Makefile 缺少预编译注入标记 MT5700_PREBUILT_HOOK"; exit 1; }
+          grep -q 'at-webserver-rust' src/Makefile || { echo "::error::src/Makefile 缺少 at-webserver-rust 标识"; exit 1; }
+
+          for SH in \
+            root/etc/init.d/at-webserver \
+            root/etc/uci-defaults/at-webserver \
+            root/etc/hotplug.d/iface/99-at-webserver \
+            root/etc/hotplug.d/usb/99-at-webserver \
+            root/usr/libexec/at-webserver/on-uplink.sh; do
+            test -f "$SH" || { echo "::error::missing file: $SH"; exit 1; }
+            test -x "$SH" || { echo "::error::missing execute permission (+x): $SH"; exit 1; }
+          done
 
           echo "==> Shell 语法检查"
           # 核心文件缺失必须失败：冒烟测试的意义就是尽早暴露克隆/注入失败，
