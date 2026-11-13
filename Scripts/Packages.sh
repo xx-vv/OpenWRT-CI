@@ -102,6 +102,10 @@ src/Makefile
 src/rust/Cargo.toml
 src/rust/Cargo.lock
 root/etc/init.d/at-webserver
+root/etc/uci-defaults/at-webserver
+root/etc/hotplug.d/iface/99-at-webserver
+root/etc/hotplug.d/usb/99-at-webserver
+root/usr/libexec/at-webserver/on-uplink.sh
 root/etc/config/at-webserver
 root/usr/share/rpcd/ucode/mt5700.uc
 root/usr/share/luci/menu.d/luci-app-mt5700.json
@@ -117,6 +121,17 @@ if [ -n "$MT5700_MISSING" ]; then
 	echo "ERROR: LianXia233/luci-app-mt5700 仓库结构异常，缺少:$MT5700_MISSING" >&2
 	exit 1
 fi
+
+# 强制修复可执行权限，防止上游在跨平台合并时丢失 x 位导致 Smoke Test 失败
+for SCRIPT in \
+	"root/etc/init.d/at-webserver" \
+	"root/etc/uci-defaults/at-webserver" \
+	"root/etc/hotplug.d/iface/99-at-webserver" \
+	"root/etc/hotplug.d/usb/99-at-webserver" \
+	"root/usr/libexec/at-webserver/on-uplink.sh"; do
+	chmod 0755 "$MT5700_DIR/$SCRIPT" 2>/dev/null || true
+done
+
 MT5700_VER=$(sed -n 's/^PKG_VERSION:=//p' "$MT5700_DIR/Makefile" | head -1)
 MT5700_BACKEND_VER=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$MT5700_DIR/src/rust/Cargo.toml" | head -1)
 MT5700_INFO="plugin ${MT5700_VER} / backend ${MT5700_BACKEND_VER}"
