@@ -46,11 +46,13 @@ jobs:
     outputs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
+      rust_lock_hash: ${{steps.rust-cache-key.outputs.rust_lock_hash}}
     steps:
       - name: Checkout Projects
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          # v7 起支持该 input；若实际版本报 "Unexpected input" 仅 warning、不失败。
           allow-unsafe-pr-checkout: true
 
       - name: Free Up Disk Space
@@ -136,14 +138,18 @@ jobs:
 
           apt_retry 300 purge firefox
           apt_retry 300 update
+          # python3-venv / python3-distutils：Cross Compile Rust Backend 用 python3 -m venv
+          # 装 ziglang，Ubuntu 22.04 的 python3 不依赖 venv；OpenWrt 部分 host 脚本需要 distutils。
+          # gperf / libtool：部分包 host 工具链与 configure 脚本需要。
           apt_retry 900 install -y --no-install-recommends \
             bc bison build-essential bzip2 ca-certificates ccache clang \
             cmake cpio curl device-tree-compiler dos2unix file flex \
-            g++-multilib gawk gcc-multilib genisoimage gettext git jq \
-            libbpf-dev libclang-dev libdw-dev libelf-dev libncurses-dev libssl-dev lld \
-            llvm ninja-build patch perl pkgconf python3 python3-cryptography \
-            python3-dev python3-packaging python3-pyelftools python3-setuptools qemu-utils rsync swig \
-            unzip wget xz-utils zlib1g-dev zstd
+            g++-multilib gawk gcc-multilib genisoimage gettext git gperf jq \
+            libbpf-dev libclang-dev libdw-dev libelf-dev libncurses-dev libssl-dev \
+            libtool lld llvm ninja-build patch perl pkgconf python3 \
+            python3-cryptography python3-dev python3-distutils python3-packaging \
+            python3-pyelftools python3-setuptools python3-venv qemu-utils rsync \
+            swig unzip wget xz-utils zlib1g-dev zstd
           sudo apt-get -yqq autoclean || true
           sudo apt-get -yqq clean || true
 
@@ -155,6 +161,9 @@ jobs:
       - name: Initialization Values
         id: initialize-values
         run: |
+          # 记录 job 起始时间：Compile Firmware 用它把编译预算收敛到 job 上限之内
+          echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
           WRT_TARGET=$(grep -m 1 -oP '^CONFIG_TARGET_\K[^=_]+(?=\=y)' "./Config/$WRT_CONFIG.txt")
           WRT_SUBTARGET=$(grep -m 1 -oP "^CONFIG_TARGET_${WRT_TARGET}_\K[^=_]+(?=\=y)" "./Config/$WRT_CONFIG.txt")
           WRT_CACHE_SOURCE=${WRT_SOURCE//\//-}
@@ -199,7 +208,9 @@ jobs:
       - name: Check Caches
         id: check-cache
         if: ${{ !inputs.WRT_TEST }}
-        uses: actions/cache@v6
+        # 用 restore@v4 而非 actions/cache@v6：后者会在 job 结束时自动 save，
+        # 与下面显式 Save Build Cache 用同一 key 会触发重复保存 warning。
+        uses: actions/cache/restore@v4
         with:
           key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
           restore-keys: ${{env.WRT_CACHE_PREFIX}}
@@ -255,6 +266,14 @@ jobs:
           cd ./wrt/
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+          # 2026-10-17 修复：immortalwrt/packages 合并官方源后 miniupnpd 升级到
+          # 2.3.11，feed 自带的 020-descr-filter-fix.patch 针对旧版解析器，
+          # 其改动已被 2.3.11 上游吸收，继续打补丁会因 hunk 失败中断编译。
+          if [ -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch ]; then
+            rm -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch
+            echo "Removed obsolete miniupnpd patch 020-descr-filter-fix.patch (merged upstream in miniupnpd 2.3.11)"
+          fi
 
       - name: Custom Packages
         run: |
@@ -340,7 +359,7 @@ jobs:
             gcc -O2 -I. -o /tmp/po2lmo-bin po2lmo.c lib/lmo.c lib/plural_formula.c
           )
           /tmp/po2lmo-bin po/zh_Hans/luci-app-mt5700.po /tmp/luci-app-mt5700.zh_Hans.lmo
-          test -s /tmp/luci-app-mt5700.zh_Hans.lmo
+          test -s /tmp/luci-app-mt5700.lmo 2>/dev/null || test -s /tmp/luci-app-mt5700.zh_Hans.lmo
 
           echo "luci-app-mt5700 package smoke test: ALL PASSED"
 
@@ -359,10 +378,11 @@ jobs:
           # 目标设备校验（防止 Profile 静默回退到 DEFAULT_PROFILE）
           # 「Target Profile」是单选 choice：MULTI_PROFILE=n 时生效符号为
           # CONFIG_TARGET_<target>_DEVICE_xxx；若 .config 未正确选中设备，
-          # defconfig 会回退到 target.mk 的 DEFAULT_PROFILE（filogic 为
-          # openwrt_one），最终编译出错误机型固件，只在镜像打包阶段才暴露。
-          # 此处提前失败，把数小时的错误编译降级为数分钟内的配置错误。
-          DEVICE_SYMBOL=$(grep -oP '^CONFIG_TARGET_[A-Za-z0-9_]+_DEVICE_[A-Za-z0-9_]+(?==y)' \
+          # defconfig 会回退到 target.mk 的 DEFAULT_PROFILE，最终编译出错误机型。
+          # 正则必须用 \S+ 而非 [A-Za-z0-9_]：TR3000 的设备名含 '-'（如
+          # cudy_tr3000-256mb-v1），字符类不匹配会回溯失败、DEVICE_SYMBOL 为空，
+          # 整个校验被静默跳过。
+          DEVICE_SYMBOL=$(grep -oP '^CONFIG_TARGET_[A-Za-z0-9_]+_DEVICE_\S+(?==y)' \
             "$GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt" | head -1)
           if [ -n "$DEVICE_SYMBOL" ]; then
             if grep -q "^$DEVICE_SYMBOL=y$" .config || \
@@ -372,6 +392,9 @@ jobs:
               echo "::error::目标设备 $DEVICE_SYMBOL 未生效，当前 $(grep -m1 '^CONFIG_TARGET_PROFILE=' .config || echo 'CONFIG_TARGET_PROFILE 未设置')"
               exit 1
             fi
+          else
+            echo "::error::未能从 Config/$WRT_CONFIG.txt 解析出设备符号（CONFIG_TARGET_*_DEVICE_*=y），无法校验目标设备"
+            exit 1
           fi
 
           # 模组插件互斥校验
@@ -419,6 +442,7 @@ jobs:
         # 不再整棵 Tokio + rustls + ring 依赖树重来。
         # 用 Cargo.lock 的 sha256 而非 commit hash：后者每次 push 都变，
         # 会把缓存命中率压到接近 0。
+        id: rust-cache-key
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
@@ -427,7 +451,9 @@ jobs:
             echo "::error::$LOCK 不存在（Custom Packages 未成功？），无法计算 Rust 缓存键"
             exit 1
           fi
-          echo "RUST_LOCK_HASH=$(sha256sum "$LOCK" | cut -c1-24)" >> "$GITHUB_ENV"
+          RUST_LOCK_HASH=$(sha256sum "$LOCK" | cut -c1-24)
+          echo "RUST_LOCK_HASH=$RUST_LOCK_HASH" >> "$GITHUB_ENV"
+          echo "rust_lock_hash=$RUST_LOCK_HASH" >> "$GITHUB_OUTPUT"
 
       - name: Restore Rust Cache
         id: rust-cache
@@ -548,7 +574,10 @@ jobs:
           echo "luci-app-mt5700 预编译后端就绪：$BIN_SIZE 字节"
 
       - name: Save Rust Cache
-        if: ${{ always() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
+        # 只在交叉编译成功后保存：失败时 /tmp/mt5700-target 可能不完整，
+        # 保存后下次 restore 会混入损坏的 .rlib。cargo fingerprint 能处理多数
+        # 情况，但链接阶段被 SIGKILL 的极端场景不保证。
+        if: ${{ success() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: rust-mt5700-${{env.RUST_LOCK_HASH}}
@@ -558,6 +587,7 @@ jobs:
             /tmp/mt5700-target
 
       - name: Download Packages
+        id: download-packages
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
@@ -571,7 +601,9 @@ jobs:
           fi
 
       - name: Save Build Cache (Download Packages)
-        if: ${{ always() && !inputs.WRT_TEST && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
+        # dl 是独立资源：Download Packages 成功后即使后续编译失败也应保存；
+        # 用 outcome 检查而非 success()，避免编译失败连带丢弃已下载的源码包。
+        if: ${{ always() && !inputs.WRT_TEST && steps.download-packages.outcome == 'success' && steps.cache-dl-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: ${{env.WRT_CACHE_PREFIX}}-dl-${{env.WRT_HASH}}
@@ -589,20 +621,67 @@ jobs:
 
           set +e
           set -o pipefail
-          # 编译期偶有按需补下载源码包，与 Download Packages 同样的挂起风险，
-          # 首轮 -j$(nproc) 用 timeout 收束（基准 ~35 分钟），失败降级 -j1 V=s
-          # 从断点续编并打印详细日志。
-          # timeout 放在 make 外层、| 之前，PIPESTATUS[0] 拿到的是 timeout 的
-          # 退出码（timeout 在子进程被 kill 时返回 124），既保留 tee + 诊断
-          # grep 结构，又能收束挂起。
-          timeout --kill-after=60 5400 make -j$(nproc) 2>&1 | tee build.log
-          RC=${PIPESTATUS[0]}
+          : > build.log
 
-          if [ "$RC" -ne 0 ]; then
-            echo "首次并行编译失败（rc=$RC），降级为单线程 -j1 重试并追加日志"
-            timeout --kill-after=60 7200 make -j1 V=s 2>&1 | tee -a build.log
-            RC=${PIPESTATUS[0]}
+          # 2026-11-09 run 130 复盘：Cache-Clean 在周日删掉全部缓存，两个作业都从零
+          # 开始，首轮 90 分钟在 toolchain/gcc/final 被 SIGTERM；降级命令 `make -j1 V=s`
+          # 把 4 核并行改成单线程，又空烧 120 分钟仍停在同一处，最终 step 以 124 退出。
+          # 冷编译实测需要 4 小时以上，旧的双重超时（90 + 120 分钟）与 345 分钟 job
+          # 上限都不可能完成；而 -j1 不是「续编」而是把剩余工作放大数倍。
+          #
+          # 改为「自适应总预算 + 等长分片续编」：
+          #   - 每个分片 45 分钟，始终 -j$(nproc)：超时只中断当前分片，不是整轮构建；
+          #   - make 幂等，分片之间从断点继续，损失仅为被 SIGTERM 打断的个别编译单元；
+          #   - 总预算上限 300 分钟（冷编译实测的量级），并从前置步骤耗时中扣除，
+          #     保证 job 总时长不超过 345 分钟上限（留 10 分钟给打包与发布）；
+          #   - 冷编译成功后新缓存会被写回，后续运行回到 40 分钟量级。
+          JOB_CAP=20100    # 335 分钟：345 分钟 job 上限减 10 分钟给后续步骤
+          MAX_BUDGET=18000 # 300 分钟：冷编译预算上限
+          if [ -n "${JOB_START_EPOCH:-}" ]; then
+            elapsed=$(( $(date +%s) - JOB_START_EPOCH ))
+          else
+            elapsed=900
           fi
+          budget=$(( JOB_CAP - elapsed ))
+          if [ "$budget" -lt 3600 ]; then
+            echo "::error::job 已耗时 $((elapsed / 60)) 分钟，剩余预算不足 60 分钟，无法完成编译"
+            exit 1
+          fi
+          if [ "$budget" -gt "$MAX_BUDGET" ]; then budget=$MAX_BUDGET; fi
+          echo "==> 编译预算 $((budget / 60)) 分钟（job 已耗时 $((elapsed / 60)) 分钟）"
+          DEADLINE=$(( $(date +%s) + budget ))
+          CHUNK=2700
+          attempt=0
+          fast_fail=0
+          RC=1
+          while :; do
+            attempt=$((attempt + 1))
+            remain=$(( DEADLINE - $(date +%s) ))
+            if [ "$remain" -le 60 ]; then
+              echo "::error::固件编译用尽 ${budget} 秒总预算仍未完成（已尝试 ${attempt} 次）"
+              RC=1
+              break
+            fi
+            slice=$CHUNK
+            if [ "$remain" -lt "$slice" ]; then slice=$remain; fi
+            echo "==> 编译分片 #${attempt}：${slice}s，剩余预算 $((remain / 60)) 分钟，-j$(nproc)"
+            timeout --kill-after=60 "$slice" make -j$(nproc) 2>&1 | tee -a build.log
+            RC=${PIPESTATUS[0]}
+            if [ "$RC" -eq 0 ]; then
+              echo "==> 固件编译完成（分片 #${attempt}）"
+              break
+            elif [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
+              fast_fail=0
+              echo "==> 分片 #${attempt} 超时（rc=$RC），从断点续编"
+            else
+              fast_fail=$((fast_fail + 1))
+              echo "==> 分片 #${attempt} 失败（rc=$RC），连续非超时失败 ${fast_fail} 次"
+              if [ "$fast_fail" -ge 2 ]; then
+                echo "::error::连续 ${fast_fail} 次非超时失败（rc=$RC），判定为真实编译错误，终止"
+                break
+              fi
+            fi
+          done
 
           if [ "$RC" -ne 0 ]; then
             echo "::group::编译失败诊断"
@@ -639,7 +718,9 @@ jobs:
           exit "$RC"
 
       - name: Save Build Cache (Toolchain & ccache)
-        if: ${{ always() && !inputs.WRT_TEST && steps.check-cache.outputs.cache-hit != 'true' }}
+        # 只在编译成功后保存：失败时 toolchain 可能不完整，保存后下次 restore
+        # 会混入半成品，反而让后续构建在更隐蔽的位置失败。
+        if: ${{ success() && !inputs.WRT_TEST && steps.check-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
@@ -829,3 +910,21 @@ jobs:
                 gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete cache $CACHE_ID"
               done
           fi
+
+      - name: Roll Rust Cache
+        # rust-mt5700-<lock_hash> 不在 WRT_CACHE_PREFIX 命名空间内，
+        # 不由上一步清理；这里只保留当前 Cargo.lock 哈希对应的那一代。
+        env:
+          RUST_LOCK_HASH: ${{needs.core.outputs.rust_lock_hash}}
+        run: |
+          set -euo pipefail
+          if [ -z "${RUST_LOCK_HASH:-}" ]; then
+            echo "no rust_lock_hash output, skip rust cache rollover"
+            exit 0
+          fi
+          gh cache list --repo "$GH_REPO" --key "rust-mt5700-" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
+              [ -n "$CACHE_ID" ] || continue
+              [[ "$CACHE_KEY" == *"${RUST_LOCK_HASH}"* ]] && continue
+              gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete rust cache $CACHE_ID"
+            done
