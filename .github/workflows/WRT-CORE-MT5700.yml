@@ -267,14 +267,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 2026-10-17 修复：immortalwrt/packages 合并官方源后 miniupnpd 升级到
-          # 2.3.11，feed 自带的 020-descr-filter-fix.patch 针对旧版解析器，
-          # 其改动已被 2.3.11 上游吸收，继续打补丁会因 hunk 失败中断编译。
-          if [ -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch ]; then
-            rm -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch
-            echo "Removed obsolete miniupnpd patch 020-descr-filter-fix.patch (merged upstream in miniupnpd 2.3.11)"
-          fi
-
       - name: Custom Packages
         run: |
           cd ./wrt/
@@ -359,7 +351,7 @@ jobs:
             gcc -O2 -I. -o /tmp/po2lmo-bin po2lmo.c lib/lmo.c lib/plural_formula.c
           )
           /tmp/po2lmo-bin po/zh_Hans/luci-app-mt5700.po /tmp/luci-app-mt5700.zh_Hans.lmo
-          test -s /tmp/luci-app-mt5700.lmo 2>/dev/null || test -s /tmp/luci-app-mt5700.zh_Hans.lmo
+          test -s /tmp/luci-app-mt5700.zh_Hans.lmo
 
           echo "luci-app-mt5700 package smoke test: ALL PASSED"
 
