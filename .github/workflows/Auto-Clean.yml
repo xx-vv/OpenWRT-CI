@@ -14,7 +14,7 @@ permissions: write-all
 
 jobs:
   auto_clean:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Delete old Releases and Workflows
         uses: ophub/delete-releases-workflows@main
@@ -24,4 +24,7 @@ jobs:
           releases_keep_latest: 0
           delete_tags: true
           delete_workflows: true
-          workflows_keep_day: 0
+          # 保留 3 天：失败时 Upload Build Log on Failure 的 artifact 已能留证，
+          # 但 workflow run 自身的中间步骤日志（如 Initialization Environment）
+          # 只有 run 还在时才可查；全部删掉会让复盘缺一半信息。
+          workflows_keep_day: 3
