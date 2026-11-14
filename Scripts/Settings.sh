@@ -194,8 +194,23 @@ chmod +x "$WIFI_DEFAULTS_DIR/10-wifi-defaults"
 echo "CONFIG_PACKAGE_luci=y" >> ./.config
 echo "CONFIG_LUCI_LANG_zh_Hans=y" >> ./.config
 echo "CONFIG_PACKAGE_luci-theme-$WRT_THEME=y" >> ./.config
-echo "CONFIG_PACKAGE_luci-app-$WRT_THEME=y" >> ./.config
-echo "CONFIG_PACKAGE_luci-app-$WRT_THEME-config=y" >> ./.config
+
+# 主题配套包名并不统一（aurora → luci-app-aurora-config，vantage →
+# luci-app-vantage，argon → luci-app-argon-config）。无脑拼
+# luci-app-$WRT_THEME / luci-app-$WRT_THEME-config 会写出不存在的符号，
+# defconfig 阶段静默丢弃并让日志变脏；这里精确映射，未知主题不追加。
+THEME_PKG=""
+case "$WRT_THEME" in
+	aurora)  THEME_PKG="luci-app-aurora-config" ;;
+	vantage) THEME_PKG="luci-app-vantage" ;;
+	argon)   THEME_PKG="luci-app-argon-config" ;;
+	*)
+		echo "警告：主题 $WRT_THEME 无已知配套包，跳过配套包追加"
+		;;
+esac
+if [ -n "$THEME_PKG" ]; then
+	echo "CONFIG_PACKAGE_$THEME_PKG=y" >> ./.config
+fi
 
 if ! grep -rqs --include=Makefile "KernelPackage/nft-fullcone" ./package/; then
 	sed -i "/^CONFIG_PACKAGE_kmod-nft-fullcone=/d" ./.config
