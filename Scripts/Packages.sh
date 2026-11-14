@@ -69,6 +69,28 @@ UPDATE_PACKAGE "easytier" "EasyTier/luci-app-easytier" "main"
 #UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "axonhub gecoosac miniupnpd sing-box luci-app-homeproxy luci-app-timewol luci-app-upnp luci-app-wolplus luci-app-wolultra"
 
+# ===== sing-box 过时补丁清理 =====
+# VIKINGYFY/packages 的 sing-box 自带 patches/100-fix-dns-tcp-close.patch，
+# 是针对旧版 sing-box 的反向移植（引入上游从未合入的 HandleStreamDNSConnection）。
+# 当 feed 把 sing-box 升到 1.15.0_alpha8 后，该补丁上下文已与上游源码
+# （仍是 HandleStreamDNSRequest）不匹配，OpenWrt 在 Build/Prepare 阶段应用
+# 补丁报 “Patch failed!” 并 Error 1，进而中断整个固件编译。
+# 上游 immortalwrt/packages 的 sing-box 不携带该补丁也能正常构建，故这里在
+# 补丁确为旧版（内容含 HandleStreamDNSConnection）时移除它，恢复构建。若上游
+# 后续刷新该补丁为适配新源码的版本，本规则因标记不匹配而自动跳过，不会误删。
+FIX_SINGBOX_STALE_PATCH() {
+	local PATCH
+	PATCH=$(find ./package -maxdepth 4 -path '*/sing-box/patches/100-fix-dns-tcp-close.patch' -print -quit 2>/dev/null)
+	[ -n "$PATCH" ] || { echo "sing-box: 无 100-fix-dns-tcp-close.patch，跳过"; return 0; }
+	if grep -q "HandleStreamDNSConnection" "$PATCH"; then
+		rm -f "$PATCH"
+		echo "sing-box: 移除过时补丁 100-fix-dns-tcp-close.patch（与 1.15.0_alpha8 源码不匹配）"
+	else
+		echo "sing-box: 100-fix-dns-tcp-close.patch 已非旧版，保留"
+	fi
+}
+FIX_SINGBOX_STALE_PATCH
+
 UPDATE_PACKAGE "diskman" "sbwml/luci-app-diskman" "main"
 UPDATE_PACKAGE "mosdns" "sbwml/luci-app-mosdns" "v5" "" "v2dat"
 UPDATE_PACKAGE "openlist2" "sbwml/luci-app-openlist2" "main"
@@ -89,7 +111,11 @@ UPDATE_PACKAGE "luci-app-natmapt" "muink/luci-app-natmapt" "master"
 #UPDATE_PACKAGE "chfs" "LianXia233/luci-app-chfs" "main"
 #UPDATE_PACKAGE "fm350" "LianXia233/luci-app-fm350" "main"
 #UPDATE_PACKAGE "h5000m-netmode" "LianXia233/luci-app-h5000m-netmode" "main"
-UPDATE_PACKAGE "mt5700" "xx-vv/luci-app-mt5700" "main"
+
+# mt5700 插件来源变量化：clone 源与报错信息必须一致，避免 fork 漂移时
+# 报错指向错误的仓库名。
+MT5700_REPO="xx-vv/luci-app-mt5700"
+UPDATE_PACKAGE "mt5700" "$MT5700_REPO" "main"
 #UPDATE_PACKAGE "mt5700m" "LianXia233/luci-app-mt5700m" "main"
 #UPDATE_PACKAGE "netmonitor" "LianXia233/luci-app-netmonitor" "main"
 #UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
@@ -118,7 +144,7 @@ while read -r MT5700_FILE; do
 	[ -f "$MT5700_DIR/$MT5700_FILE" ] || MT5700_MISSING="$MT5700_MISSING $MT5700_FILE"
 done <<< "$MT5700_REQUIRED"
 if [ -n "$MT5700_MISSING" ]; then
-	echo "ERROR: LianXia233/luci-app-mt5700 仓库结构异常，缺少:$MT5700_MISSING" >&2
+	echo "ERROR: ${MT5700_REPO} 仓库结构异常，缺少:$MT5700_MISSING" >&2
 	exit 1
 fi
 
