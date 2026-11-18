@@ -33,11 +33,14 @@ env:
   WRT_SOURCE: ${{inputs.WRT_SOURCE}}
   WRT_PACKAGE: ${{inputs.WRT_PACKAGE}}
   WRT_TEST: ${{inputs.WRT_TEST}}
+  # 本流程专用 MT5700 模组插件（luci-app-mt5700），供 Release body / 产物命名统一引用
+  WRT_MODEM: MT5700
 
 jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
     # 固定 runner 镜像：22.04 工具链较旧，若未来迁移到 24.04 需同步验证。
+    # 22.04 标准支持到 2027-04，届时 GitHub 会下线镜像，请提前规划迁移。
     runs-on: ubuntu-22.04
     # 兜底上限：正常构建约 40 分钟。2026-11-06 事故中 apt 下载退化把 job 拖到
     # 2.5 小时，最终 runner 被环境回收、日志也未上传。显式收束可让异常在可观测
@@ -47,17 +50,20 @@ jobs:
       cache_prefix: ${{steps.initialize-values.outputs.cache_prefix}}
       cache_key: ${{steps.clone-code.outputs.cache_key}}
       rust_lock_hash: ${{steps.rust-cache-key.outputs.rust_lock_hash}}
+      # [P2] rustc release 一并输出，供 cache-rollover 精确保留当前 Rust 缓存
+      rustc_rel: ${{steps.rust-cache-key.outputs.rustc_rel}}
     steps:
       - name: Checkout Projects
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
           # v7 起支持该 input；若实际版本报 "Unexpected input" 仅 warning、不失败。
+          # 若未来 v7 收紧 input 校验变成 error，删掉本行即可。
           allow-unsafe-pr-checkout: true
 
       - name: Free Up Disk Space
         # GitHub runner 根盘预装 dotnet/android-sdk/ghc 等占用约 25GB，
-        # filogic 全量编译 + ccache 需要 30GB 以上，先清理与编译无关的预装件。
+        # 全量编译 + ccache 需要 30GB 以上，先清理与编译无关的预装件。
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost /usr/local/lib/node_modules \
@@ -65,12 +71,14 @@ jobs:
           df -h / /mnt 2>/dev/null || true
 
       - name: Select Apt Mirror
-        # runner 镜像内置 /etc/apt/apt-mirrors.txt：azure(priority:1) → archive(2)
-        # → security(3)。apt 只按优先级取第一个可用镜像，慢但没报错时不会自动
-        # 降级。2026-11-06 事故就是 azure 镜像吞吐骤降到几十 kB/s。
-        # 这里按实测吞吐在两者之间切换；吞吐正常时不改变任何现有配置。
+        # [P1] 改为探测「实际生效源」而非只比较 azure/archive 两个候选。
+        # 事故记录：runner 实际生效的是 sources.list.d 里硬编码的
+        # us-east-2.ec2.archive.ubuntu.com，两个候选都很快但实际源很慢，
+        # 旧逻辑会误判为正常。阈值也从 300 kB/s 提到 1 MB/s。
         timeout-minutes: 5
         run: |
+          # 测速必须带真实体积：小文件测的是连接建立而不是持续吞吐。
+          # 用 universe 的 Packages.xz，Range 只取前 8 MB：慢源会超时现形为 0。
           probe() {
             local sp
             sp=$(curl -sSL -r 0-8388607 -o /dev/null --connect-timeout 10 --max-time 25 \
@@ -79,24 +87,66 @@ jobs:
           }
           . /etc/os-release 2>/dev/null || true
           IDX="dists/${VERSION_CODENAME:-jammy}/universe/binary-amd64/Packages.xz"
-          AZ=$(probe "http://azure.archive.ubuntu.com/ubuntu/${IDX}")
-          ALT=$(probe "https://archive.ubuntu.com/ubuntu/${IDX}")
-          AZ=${AZ:-0}
-          ALT=${ALT:-0}
-          echo "apt 批量吞吐实测（字节/秒）：azure=${AZ} archive=${ALT}"
 
-          if [ "$AZ" -lt 300000 ] && [ "$ALT" -ge $((AZ * 2)) ] && [ "$ALT" -ge 300000 ]; then
-            echo "azure 镜像吞吐低于阈值，切换为 archive.ubuntu.com 优先"
+          # 解析 apt 实际生效的 Ubuntu 镜像 host：deb822(.sources) 的 URIs: 或经典
+          # sources.list 的 http(s) URL。去重后逐个探测，覆盖 runner 换区域的情况。
+          CUR_HOST=$(grep -rhoE 'https?://[^ /[:space:]]+/ubuntu/?' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list \
+            2>/dev/null | sed 's#/$##' | grep -vE 'security\.ubuntu\.com' | sort -u | head -1 || true)
+          echo "apt 实际生效源：${CUR_HOST:-未识别}"
+
+          measure() {
+            local url="$1" sp
+            sp=$(probe "${url%/}/${IDX}")
+            echo "${sp:-0}"
+          }
+          CUR_SP=0
+          if [ -n "$CUR_HOST" ]; then
+            CUR_SP=$(measure "$CUR_HOST")
+          fi
+          AZ=$(measure "http://azure.archive.ubuntu.com/ubuntu")
+          ALT=$(measure "https://archive.ubuntu.com/ubuntu")
+          echo "apt 批量吞吐实测（字节/秒）：当前实际源=${CUR_SP} azure=${AZ} archive=${ALT}"
+
+          # 健康线 1 MB/s：init 脚本单次 900s 要下约 699 MB，低于 ~800 kB/s 必然超时。
+          THRESH=1048576
+          # 判定围绕「实际源」展开：实际源低于阈值视为退化。优先切 archive.ubuntu.com
+          # （历史上从未退化），azure 仅作为 archive 也退化时的兜底。
+          # CUR_HOST 识别失败时保持默认（安全降级）。
+          if [ "$CUR_SP" -ge "$THRESH" ]; then
+            echo "实际源吞吐正常（${CUR_SP} B/s），保持 runner 默认配置"
+          elif [ -z "$CUR_HOST" ]; then
+            echo "未识别实际源，跳过镜像切换（安全降级）"
+          elif [ "$ALT" -ge "$THRESH" ] && [ "$ALT" -ge $((CUR_SP * 2)) ]; then
+            echo "实际源退化，切换为 archive.ubuntu.com 优先"
             printf '%s\t%s\n' \
               'https://archive.ubuntu.com/ubuntu/' 'priority:1' \
               'https://security.ubuntu.com/ubuntu/' 'priority:2' \
               'http://azure.archive.ubuntu.com/ubuntu/' 'priority:3' \
               | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
-            sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' \
-              /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            # 关键：sources 里硬编码的实际源 host 必须一并替换，否则 apt 仍走旧源。
+            # 覆盖 ec2 各区域与 azure，兼容 deb822 与经典 sources.list。
+            sudo sed -i -E \
+              -e 's#https?://[^ /[:space:]]*\.archive\.ubuntu\.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+              -e 's#https?://azure\.archive\.ubuntu\.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+              /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list \
+              2>/dev/null || true
+            sudo -E apt-get -yqq update
+          elif [ "$AZ" -ge "$THRESH" ] && [ "$AZ" -ge "$CUR_SP" ]; then
+            echo "实际源退化，切换为 azure.archive.ubuntu.com 优先"
+            printf '%s\t%s\n' \
+              'http://azure.archive.ubuntu.com/ubuntu/' 'priority:1' \
+              'https://security.ubuntu.com/ubuntu/' 'priority:2' \
+              'https://archive.ubuntu.com/ubuntu/' 'priority:3' \
+              | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+            sudo sed -i -E \
+              -e 's#https?://[^ /[:space:]]*\.archive\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' \
+              -e 's#https?://archive\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' \
+              /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list \
+              2>/dev/null || true
             sudo -E apt-get -yqq update
           else
-            echo "镜像吞吐正常，保持 runner 默认镜像配置"
+            echo "所有候选源均退化，保持默认（安全降级）"
           fi
 
       - name: Initialization Environment
@@ -153,6 +203,8 @@ jobs:
           sudo apt-get -yqq autoclean || true
           sudo apt-get -yqq clean || true
 
+          # [P3] 补 daemon-reload，避免 init_build_environment.sh 装的服务未注册
+          sudo systemctl daemon-reload
           sudo timedatectl set-timezone "Asia/Shanghai"
           sudo mkdir -p /mnt/build_wrt
           sudo chown $USER:$USER /mnt/build_wrt
@@ -172,10 +224,28 @@ jobs:
           WRT_CACHE_PREFIX="wrt-$WRT_CACHE_SOURCE-$WRT_CACHE_BRANCH-$WRT_CACHE_TARGET"
           WRT_WIFI=$(grep -oE 'WIFI-(YES|NO)$' <<< "${WRT_CONFIG^^}" || true); WRT_WIFI=${WRT_WIFI:-none}
 
+          # 日期：WRT_DATE 用于 Tag（格式不变），WRT_DATE_SHORT 用于文件名，
+          # WRT_DATE_DOT 用于版本标记 / 产物名。三者同源，避免跨零点不一致。
+          WRT_NOW="$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S:%Y%m%d")"
+
+          # 设备名解析支持含 '-' 的设备名（如 cudy_tr3000-256mb-v1），
+          # 字符类不匹配 '-' 会回溯失败、WRT_DEVICE 为空，Package Firmware 会失败。
+          WRT_DEVICE=$(grep -oP '^CONFIG_TARGET_[A-Za-z0-9_]+_DEVICE_\K\S+(?==y)' "./Config/$WRT_CONFIG.txt" | head -1)
+
+          # 架构从配置里的 CONFIG_TARGET_ARCH_PACKAGES 推导（aarch64_cortex-a53 -> aarch64），
+          # 不再写死。Config/*.txt 未包含该符号时 fallback 到 aarch64。
+          WRT_ARCH_RAW=$(grep -oP '^CONFIG_TARGET_ARCH_PACKAGES="\K[^"]+' "./Config/$WRT_CONFIG.txt" | head -1 || true)
+          WRT_ARCH=${WRT_ARCH_RAW%%_*}
+          WRT_ARCH=${WRT_ARCH:-aarch64}
+
           {
             echo "WRT_INFO=${WRT_SOURCE%%/*}"
             echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}"
-            echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")"
+            echo "WRT_DATE=${WRT_NOW%%:*}"
+            echo "WRT_DATE_SHORT=${WRT_NOW##*:}"
+            echo "WRT_DATE_DOT=$(TZ=UTC-8 date +"%y.%m.%d")"
+            echo "WRT_ARCH=$WRT_ARCH"
+            echo "WRT_DEVICE=$WRT_DEVICE"
             echo "WRT_CACHE_PREFIX=$WRT_CACHE_PREFIX"
             echo "WRT_CACHE_TARGET=$WRT_CACHE_TARGET"
             echo "WRT_SUBTARGET=$WRT_SUBTARGET"
@@ -210,10 +280,11 @@ jobs:
         if: ${{ !inputs.WRT_TEST }}
         # 用 restore@v4 而非 actions/cache@v6：后者会在 job 结束时自动 save，
         # 与下面显式 Save Build Cache 用同一 key 会触发重复保存 warning。
+        # key 加 -tc- 段，避免 restore-keys 前缀匹配误命中 -dl- 缓存。
         uses: actions/cache/restore@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
-          restore-keys: ${{env.WRT_CACHE_PREFIX}}
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
+          restore-keys: ${{env.WRT_CACHE_PREFIX}}-tc-
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/host*
@@ -237,8 +308,8 @@ jobs:
           if [ "${{ steps.check-cache.outputs.cache-hit }}" != 'true' ]; then
             # 只清理 toolchain/ccache 旧代际，排除 -dl- 前缀。
             # gh cache list --key 是前缀匹配：WRT_CACHE_PREFIX 同时命中
-            #   prefix-<hash>（toolchain）与 prefix-dl-<hash>（源码包）。
-            # 若在这里一并删除，下一次 Restore Build Cache (Download Packages)
+            #   PREFIX-tc-<hash>（toolchain）与 PREFIX-dl-<hash>（源码包）。
+            # 若在这里一并删除 dl，下一次 Restore Build Cache (Download Packages)
             # 就会 miss，导致全量重下载源码包——正好抵消 dl 缓存的意义。
             # -dl- 旧代际由独立 job cache-rollover 负责清理。
             CACHE_LIST=$(gh cache list --json id,key --key "$WRT_CACHE_PREFIX" \
@@ -279,6 +350,14 @@ jobs:
         # 暴露，而不是数小时后才在 Compile Firmware 里失败。
         run: |
           cd ./wrt/package/luci-app-mt5700
+
+          # 先规范化行尾与可执行位：上游 Windows 提交或 git checkout 丢 +x
+          # 时，下面的 test -x 会误判为结构错误。
+          find root/etc/init.d root/etc/uci-defaults root/etc/hotplug.d root/usr/libexec tests \
+            -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+          find root/etc/init.d root/etc/uci-defaults root/etc/hotplug.d root/usr/libexec \
+            -type f -exec chmod 0755 {} + 2>/dev/null || true
+          find tests -type f -name '*.sh' -exec chmod 0755 {} + 2>/dev/null || true
 
           echo "==> 结构校验（含本仓库深度适配注入）"
           test -f src/Makefile || { echo "::error::missing src/Makefile"; exit 1; }
@@ -371,7 +450,7 @@ jobs:
           # 「Target Profile」是单选 choice：MULTI_PROFILE=n 时生效符号为
           # CONFIG_TARGET_<target>_DEVICE_xxx；若 .config 未正确选中设备，
           # defconfig 会回退到 target.mk 的 DEFAULT_PROFILE，最终编译出错误机型。
-          # 正则必须用 \S+ 而非 [A-Za-z0-9_]：TR3000 的设备名含 '-'（如
+          # 正则必须用 \S+ 而非 [A-Za-z0-9_]：设备名可能含 '-'（如
           # cudy_tr3000-256mb-v1），字符类不匹配会回溯失败、DEVICE_SYMBOL 为空，
           # 整个校验被静默跳过。
           DEVICE_SYMBOL=$(grep -oP '^CONFIG_TARGET_[A-Za-z0-9_]+_DEVICE_\S+(?==y)' \
@@ -425,42 +504,17 @@ jobs:
           # 恢复的 toolchain cache 完全失效（每次编译白重建 toolchain 约 20~30 分钟）。
           # 改为只清理 host 工具目录与 tmp（保证 sed 等 host 工具重建），保留
           # toolchain。make tools/install 在 host 工具已就位时会快速跳过。
+          #
+          # 建议先跑一次 `make clean -n` 确认你的 fork 的 clean 实际删什么：
+          # 标准 OpenWrt/ImmortalWrt 的 clean 不删 staging_dir/host 与 toolchain-*
+          # （那是 dirclean）。若 clean 只删 host，下面的 rm host 反而多删，比 clean 更亏。
           rm -rf ./staging_dir/host ./tmp
           make tools/install -j$(nproc)
 
-      - name: Rust Cache Key
-        # 缓存键只依赖 Cargo.lock：只改业务代码、不改依赖树的重复构建，
-        # cargo 命中 registry/git 索引与 target 目录后只重编 crate 自身，
-        # 不再整棵 Tokio + rustls + ring 依赖树重来。
-        # 用 Cargo.lock 的 sha256 而非 commit hash：后者每次 push 都变，
-        # 会把缓存命中率压到接近 0。
-        id: rust-cache-key
-        if: ${{ !inputs.WRT_TEST }}
-        run: |
-          cd ./wrt/
-          LOCK=package/luci-app-mt5700/src/rust/Cargo.lock
-          if [ ! -f "$LOCK" ]; then
-            echo "::error::$LOCK 不存在（Custom Packages 未成功？），无法计算 Rust 缓存键"
-            exit 1
-          fi
-          RUST_LOCK_HASH=$(sha256sum "$LOCK" | cut -c1-24)
-          echo "RUST_LOCK_HASH=$RUST_LOCK_HASH" >> "$GITHUB_ENV"
-          echo "rust_lock_hash=$RUST_LOCK_HASH" >> "$GITHUB_OUTPUT"
-
-      - name: Restore Rust Cache
-        id: rust-cache
-        if: ${{ !inputs.WRT_TEST }}
-        uses: actions/cache/restore@v4
-        with:
-          key: rust-mt5700-${{env.RUST_LOCK_HASH}}
-          restore-keys: |
-            rust-mt5700-
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            /tmp/mt5700-target
-
-      - name: Cross Compile Rust Backend for luci-app-mt5700
+      - name: Prepare Rust Toolchain
+        # 从 Cross Compile 步骤提取：先装 rustc 并解析目标架构，
+        # 让后面的 Rust Cache Key 能读到 rustc 版本，把 rustc 纳入缓存键。
+        # 同时把 cargo 加速变量放进 $GITHUB_ENV，Cross Compile 直接复用。
         if: ${{ !inputs.WRT_TEST }}
         run: |
           cd ./wrt/
@@ -480,19 +534,106 @@ jobs:
               exit 1
               ;;
           esac
+          echo "RUST_TARGET=$RUST_TARGET" >> "$GITHUB_ENV"
+          echo "ZIG_TARGET=$ZIG_TARGET" >> "$GITHUB_ENV"
           echo "Rust 目标：$RUST_TARGET（ARCH_PACKAGES=$ARCH_PACKAGES）"
 
-          if ! command -v cargo >/dev/null 2>&1; then
+          echo "==> 准备 Rust 官方工具链（rustup stable）"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
             # 先落盘再执行：curl 卡住或证书失败时，管道喂给 sh 的是空内容，
             # sh 会以 0 退出，缺工具链要到几小时后 cargo 阶段才暴露。
             curl -sSf --retry 3 --connect-timeout 30 --max-time 120 \
               https://sh.rustup.rs -o /tmp/rustup-init.sh
-            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable
-            . "$HOME/.cargo/env"
+            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable --no-modify-path
           fi
-          # target 标准库约 200MB，rustup 无内置下载超时；慢速挂起时收束并重试一次
-          timeout --kill-after=30 900 rustup target add "$RUST_TARGET" \
-            || timeout --kill-after=30 900 rustup target add "$RUST_TARGET"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          # 工具链与目标 std 一次装齐：分两步会多一轮索引解析与网络往返；
+          # 已安装时幂等（只校验不重下）。rustup 无内置下载超时，挂起时收束并重试一次。
+          timeout --kill-after=60 900 rustup toolchain install stable --profile minimal \
+            --target "$RUST_TARGET" --no-self-update \
+            || timeout --kill-after=60 900 rustup toolchain install stable --profile minimal \
+                 --target "$RUST_TARGET" --no-self-update
+          rustup default stable >/dev/null 2>&1 || true
+          echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
+
+          # 校验目标 std 已就位，失败点前移到工具链准备阶段
+          rustup target list --installed | grep -qx "$RUST_TARGET" || {
+            echo "::error::官方工具链缺少目标 std：$RUST_TARGET"
+            exit 1
+          }
+
+          # cargo 加速变量：sparse 索引比默认 git 索引快一个数量级，
+          # 重试/超时与 apt 下载步骤的收束策略一致。
+          {
+            echo "CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse"
+            echo "CARGO_NET_RETRY=5"
+            echo "CARGO_HTTP_TIMEOUT=60"
+            echo "CARGO_HTTP_MULTIPLEXING=true"
+            echo "CARGO_INCREMENTAL=0"
+          } >> "$GITHUB_ENV"
+
+          rustc --version
+          cargo --version
+
+      - name: Rust Cache Key
+        # 缓存键只依赖 Cargo.lock + rustc release：只改业务代码、不改依赖树时，
+        # cargo 命中 registry/git 索引与 target 目录后只重编 crate 自身，不再整棵
+        # Tokio + rustls + ring 依赖树重来；rustc stable 滚动时自动失效，避免新旧
+        # 编译器产物混在同一个 target 目录里白占体积。
+        # 用 Cargo.lock 的 sha256 而非 commit hash：后者每次 push 都变，
+        # 会把缓存命中率压到接近 0。
+        id: rust-cache-key
+        if: ${{ !inputs.WRT_TEST }}
+        run: |
+          cd ./wrt/
+          LOCK=package/luci-app-mt5700/src/rust/Cargo.lock
+          if [ ! -f "$LOCK" ]; then
+            echo "::error::$LOCK 不存在（Custom Packages 未成功？），无法计算 Rust 缓存键"
+            exit 1
+          fi
+          RUST_LOCK_HASH=$(sha256sum "$LOCK" | cut -c1-24)
+          RUSTC_REL=$(rustc -vV 2>/dev/null | sed -n 's/^release: //p' | head -1)
+          echo "RUST_LOCK_HASH=$RUST_LOCK_HASH" >> "$GITHUB_ENV"
+          echo "RUSTC_REL=${RUSTC_REL:-unknown}" >> "$GITHUB_ENV"
+          echo "rust_lock_hash=$RUST_LOCK_HASH" >> "$GITHUB_OUTPUT"
+          echo "rustc_rel=${RUSTC_REL:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Rust 缓存键：locks=${RUST_LOCK_HASH} rustc=${RUSTC_REL:-unknown}"
+
+      - name: Restore Rust Cache
+        id: rust-cache
+        if: ${{ !inputs.WRT_TEST }}
+        uses: actions/cache/restore@v4
+        with:
+          # key 加入 rustc release，restore-keys 允许多级降级：
+          # 依赖树未变但 rustc 升级时仍能复用 registry，target 目录里的过期单元
+          # 由 cargo 自己的 fingerprint 判定重编。
+          # path 含 ~/.cache/pip：Prepare Rust Toolchain 的 ziglang wheel 缓存，
+          # 命中后不再从 PyPI 下载约 50MB。
+          key: rust-mt5700-${{env.RUST_LOCK_HASH}}-${{env.RUSTC_REL}}
+          restore-keys: |
+            rust-mt5700-${{env.RUST_LOCK_HASH}}-
+            rust-mt5700-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/pip
+            /tmp/mt5700-target
+
+      - name: Cross Compile Rust Backend for luci-app-mt5700
+        # 工具链、目标 std、cargo 加速变量已由 Prepare Rust Toolchain 就绪
+        # （RUST_TARGET / ZIG_TARGET / CARGO_* 在 env），这里只补 zig 链接器。
+        # at-webserver：Tokio + rustls 依赖树含 ring（C 代码），链接器用 zig
+        # （与上游 scripts/sdk-build.sh 同一方案）：Rust 的 musl target 不自带
+        # libc 与启动对象，zig cc 一次提供 libc 与 C 编译器。
+        if: ${{ !inputs.WRT_TEST }}
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+        run: |
+          cd ./wrt/
+
+          # 目标 std 已由 Prepare Rust Toolchain 装齐并校验，这里不再 rustup target add
           cargo --version
           rustc --version
 
@@ -538,24 +679,28 @@ jobs:
           # （OpenWrt 官方软件包同样以 cortex-a53 为基线）；-C link-self-contained=no
           # 让 zig cc 提供 libc 与启动对象。
           export RUSTFLAGS="-C link-self-contained=no -C target-cpu=cortex-a53"
-          # Tokio + rustls + ring 依赖树的下载与 zig 链接最重，挂起时收束并重试一次
+          # --locked：Cargo.lock 由上游固定，避免 CI 上解析出与发布产物不同的依赖树。
+          # Tokio + rustls + ring 依赖树的下载与 zig 链接最重，挂起时收束并重试一次。
+          START=$(date +%s)
           CARGO_TARGET_DIR=/tmp/mt5700-target timeout --kill-after=60 1800 \
             cargo build --release --locked --target "$RUST_TARGET" \
             || CARGO_TARGET_DIR=/tmp/mt5700-target timeout --kill-after=60 1800 \
             cargo build --release --locked --target "$RUST_TARGET"
+          echo "at-webserver 交叉编译用时：$(( $(date +%s) - START )) 秒（Rust 缓存命中=${RUST_CACHE_HIT:-false}）"
 
+          echo "==> 产物自检"
           BIN="/tmp/mt5700-target/$RUST_TARGET/release/at-webserver"
           file "$BIN"
           file "$BIN" | grep -q 'ARM aarch64' || { echo "::error::后端不是 aarch64 ELF"; exit 1; }
           file "$BIN" | grep -q 'statically linked' || { echo "::error::后端不是静态链接"; exit 1; }
           readelf -d "$BIN" | grep -q 'no dynamic section' || {
-            echo "::error::后端带动态段"
+            echo "::error::后端带动态段，固件缺少对应 musl 动态库时无法启动"
             readelf -d "$BIN"
             exit 1
           }
           BIN_SIZE=$(stat -c %s "$BIN")
           if [ "$BIN_SIZE" -lt 1000000 ]; then
-            echo "::error::后端体积异常（$BIN_SIZE 字节）"
+            echo "::error::后端体积异常（$BIN_SIZE 字节），疑似构建未完成"
             exit 1
           fi
 
@@ -569,13 +714,15 @@ jobs:
         # 只在交叉编译成功后保存：失败时 /tmp/mt5700-target 可能不完整，
         # 保存后下次 restore 会混入损坏的 .rlib。cargo fingerprint 能处理多数
         # 情况，但链接阶段被 SIGKILL 的极端场景不保证。
+        # key 与 Restore Rust Cache 同步，含 rustc release；path 含 ~/.cache/pip。
         if: ${{ success() && !inputs.WRT_TEST && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: rust-mt5700-${{env.RUST_LOCK_HASH}}
+          key: rust-mt5700-${{env.RUST_LOCK_HASH}}-${{env.RUSTC_REL}}
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cache/pip
             /tmp/mt5700-target
 
       - name: Download Packages
@@ -712,10 +859,12 @@ jobs:
       - name: Save Build Cache (Toolchain & ccache)
         # 只在编译成功后保存：失败时 toolchain 可能不完整，保存后下次 restore
         # 会混入半成品，反而让后续构建在更隐蔽的位置失败。
+        # key 加 -tc- 段，与 Check Caches 的 restore key 对齐，
+        # 避免 restore-keys 前缀匹配误命中 -dl- 缓存。
         if: ${{ success() && !inputs.WRT_TEST && steps.check-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{env.WRT_CACHE_PREFIX}}-${{env.WRT_HASH}}
+          key: ${{env.WRT_CACHE_PREFIX}}-tc-${{env.WRT_HASH}}
           path: |
             ./wrt/.ccache
             ./wrt/staging_dir/tool*
@@ -731,66 +880,84 @@ jobs:
       - name: Package Firmware
         run: |
           cd ./wrt/ && mkdir ./upload/
-          cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
-          if [[ "$WRT_TEST" != 'true' ]]; then
+          # 产物统一命名：<机型>-<模组插件>-<架构>-<YY.MM.DD>-<镜像类型>.<扩展名>
+          # 机型取 OpenWrt 设备定义里的 DEVICE_MODEL（如 H5000M、Cudy TR3000），
+          # 解析失败时 fallback 到 DEVICE 符号名；模组插件固定 MT5700；
+          # 编译日期用 WRT_DATE_DOT（YY.MM.DD，与 Tag 同源）。
+          # 镜像类型后缀必须保留：同次构建可能产出多个完整镜像格式，去掉后会互相
+          # 覆盖；也便于 OTA 与下载页精确识别主固件。
+          if [ -z "${WRT_DEVICE:-}" ]; then
+            echo "::error::未能从 Config/$WRT_CONFIG.txt 解析目标设备，无法生成产物名"
+            exit 1
+          fi
+          WRT_MODEL=$(grep -rhA20 "^define Device/$WRT_DEVICE$" target/linux/*/image/*.mk 2>/dev/null \
+            | sed -n 's/^[[:space:]]*DEVICE_MODEL[[:space:]]*:=[[:space:]]*//p' | head -1)
+          WRT_MODEL="${WRT_MODEL:-$WRT_DEVICE}"
+          # 供 Release body 展示；动态机型，不再硬编码具体设备名。
+          echo "WRT_MODEL=$WRT_MODEL" >> "$GITHUB_ENV"
+          ASSET_PREFIX="${WRT_MODEL}-${WRT_MODEM}-${WRT_ARCH}-${WRT_DATE_DOT}"
+          echo "产物前缀：$ASSET_PREFIX（设备 ${WRT_DEVICE}，架构 ${WRT_ARCH}）"
+
+          if [[ $WRT_TEST != 'true' ]]; then
             echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
             echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
 
-            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} + || true
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
 
-            SAFE_NAME=$(echo "$WRT_NAME"   | tr '/ ' '__')
-            SAFE_INFO=$(echo "$WRT_INFO"   | tr '/ ' '__')
-            SAFE_BRANCH=$(echo "$WRT_BRANCH" | tr '/ ' '__')
-            SAFE_TARGET=$(echo "$WRT_TARGET" | tr '/ ' '__')
-            SAFE_WIFI="$WRT_WIFI"
-            [ "$SAFE_WIFI" = "none" ] && SAFE_WIFI=""
-            SAFE_DATE="$WRT_DATE"
-
-            for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
-              BASE=$(basename "$FILE")
-              case "$BASE" in
-                *.bin|*.img|*.gz|*.vmdk) ;;
-                *) mv -f "$FILE" "./upload/$BASE"; continue ;;
+            # 只发布「可直接刷写的完整固件」：按镜像类型白名单精确挑选。
+            # 旧逻辑按设备名 + 扩展名粗筛，会把 kernel.bin / rootfs.img.gz 等散件
+            # 一并搬进 upload，且 ${FILE##*.} 对 .img.gz 只取到 gz，扩展名被截断。
+            # 现在从文件名剥离平台/设备/squashfs 前缀得到 IMG_SLUG，非白名单留在
+            # bin/targets 随 make clean 回收。
+            for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_DEVICE*") ; do
+              BASE="$(basename "$FILE")"
+              EXT="$(printf '%s' "$BASE" | cut -d '.' -f 2-)"
+              NAME="$(printf '%s' "$BASE" | cut -d '.' -f 1)"
+              IMG_SLUG="$(printf '%s' "$NAME" | sed -E \
+                -e "s/^.*${WRT_DEVICE}-//" \
+                -e 's/^squashfs-//' \
+                -e 's/^initramfs-//')"
+              case "$IMG_SLUG" in
+                sysupgrade|factory|combined|combined-efi|image|image-efi)
+                  NEW_FILE="$ASSET_PREFIX-$IMG_SLUG.$EXT"
+                  if [ -e "./upload/$NEW_FILE" ]; then
+                    echo "::error::产物名冲突：$NEW_FILE（同一镜像类型出现多个文件），拒绝发布以免互相覆盖"
+                    exit 1
+                  fi
+                  mv -f "$FILE" "./upload/$NEW_FILE"
+                  echo "[keep]   $BASE -> $NEW_FILE" ;;
+                *)
+                  echo "[filter] $BASE (slug=${IMG_SLUG:-空})" ;;
               esac
-              EXT=$(echo "$BASE" | cut -d '.' -f 2-)
-              STEM="${BASE%.*}"
-              case "$STEM" in
-                *sysupgrade*)   TYPE=sysupgrade ;;
-                *factory*)      TYPE=factory ;;
-                *initramfs*)    TYPE=initramfs ;;
-                *recovery*)     TYPE=recovery ;;
-                *combined-efi*) TYPE=efi ;;
-                *combined*)     TYPE=combined ;;
-                *rootfs*)       TYPE=rootfs ;;
-                *kernel*)       TYPE=kernel ;;
-                *)              TYPE="" ;;
-              esac
-
-              PARTS=()
-              [ -n "$SAFE_NAME" ]   && PARTS+=("$SAFE_NAME")
-              [ -n "$SAFE_INFO" ]   && PARTS+=("$SAFE_INFO")
-              [ -n "$SAFE_BRANCH" ] && PARTS+=("$SAFE_BRANCH")
-              [ -n "$SAFE_TARGET" ] && PARTS+=("$SAFE_TARGET")
-              [ -n "$SAFE_WIFI" ]   && PARTS+=("$SAFE_WIFI")
-              [ -n "$TYPE" ]        && PARTS+=("$TYPE")
-              NEW_BASE=$(IFS='-'; echo "${PARTS[*]}")
-              NEW_BASE="$NEW_BASE-$SAFE_DATE"
-
-              NEW_FILE="$NEW_BASE.$EXT"
-              if [ -e "./upload/$NEW_FILE" ]; then
-                FS=$(echo "$STEM" | grep -ioE 'squashfs|ext4' | tail -n 1 || true)
-                if [ -n "$FS" ] && [ ! -e "./upload/$NEW_BASE-$FS.$EXT" ]; then
-                  NEW_FILE="$NEW_BASE-$FS.$EXT"
-                else
-                  SUFFIX=$(echo "$BASE" | md5sum | cut -c 1-6)
-                  NEW_FILE="$NEW_BASE-$SUFFIX.$EXT"
-                fi
-              fi
-              mv -f "$FILE" "./upload/$NEW_FILE"
             done
 
-            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \; || true
+            # 发布前自检：upload 只允许固件产物 + Config-*.txt。
+            # 原逻辑把 bin/targets 下剩余文件全部搬进 upload，若上游产物结构变化
+            # 或混入杂项，会直接进 Release。这里提前失败，避免污染发布。
+            for f in ./upload/*; do
+              [ -f "$f" ] || continue
+              b=$(basename "$f")
+              case "$b" in
+                Config-*.txt) continue ;;
+              esac
+              ext="${b##*.}"
+              case "$ext" in
+                bin|img|gz|vmdk|iso|itb|trx|ubi|squashfs|tar|tgz|zip|elf) ;;
+                *)
+                  echo "::error::upload 出现非固件文件：$b（扩展名 ${ext}），拒绝发布以免污染 Release"
+                  exit 1
+                  ;;
+              esac
+            done
+            UPLOAD_COUNT=$(find ./upload/ -maxdepth 1 -type f | wc -l)
+            if [ "$UPLOAD_COUNT" -eq 0 ]; then
+              echo "::error::upload 为空，未产出任何产物，拒绝发布"
+              exit 1
+            fi
+            echo "=== 待发布产物（$UPLOAD_COUNT 个）==="
+            ls -lh ./upload/
+
             rm -rf ./build_dir ./bin
           fi
 
@@ -815,6 +982,9 @@ jobs:
 
           配置：${{env.WRT_CONFIG}}
           平台：${{env.WRT_TARGET}}
+          架构：${{env.WRT_ARCH}}
+
+          模组插件：MT5700（luci-app-mt5700）
 
           登录地址：${{env.WRT_IP}}
           登录密码：${{env.WRT_PW}}
@@ -852,7 +1022,8 @@ jobs:
       - name: Upload Build Log on Failure
         # 编译失败时保留完整日志：runner 被环境回收后（2026-11-06 事故）
         # job 日志端点会返回 404，只有 artifact 能留下来复盘。
-        if: failure() && env.WRT_TEST != 'true'
+        # 统一用 !inputs.WRT_TEST，与文件内其他 step 风格一致。
+        if: ${{ failure() && !inputs.WRT_TEST }}
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ env.WRT_CONFIG }}-${{ env.WRT_DATE }}
@@ -883,15 +1054,27 @@ jobs:
           # 撞 10GB 配额后 Save Build Cache 静默失败。
           KEY_SUFFIX="${WRT_CACHE_KEY##*-}"
 
-          CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-${KEY_SUFFIX}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
+          # toolchain 缓存已迁移到 -tc- 命名空间：只在该命名空间内轮换，
+          # 不再用 WRT_CACHE_PREFIX- 前缀（会误碰 -dl- 缓存，与下面的 dl rollover 重复）。
+          CURRENT_TC_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-${KEY_SUFFIX}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
           if [ -n "$CURRENT_TC_KEYS" ]; then
-            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-" --ref "$GITHUB_REF" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+            gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-tc-" --ref "$GITHUB_REF" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
               while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
                 [ -n "$CACHE_ID" ] || continue
                 [[ "$CACHE_KEY" == *"${KEY_SUFFIX}"* ]] && continue
                 gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete cache $CACHE_ID"
               done
           fi
+
+          # 过渡期清理旧格式（无 -tc- 段）的 toolchain 缓存；
+          # 等到所有历史缓存自然过期后可删除本段。
+          gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-" --ref "$GITHUB_REF" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
+            while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
+              [ -n "$CACHE_ID" ] || continue
+              [[ "$CACHE_KEY" == *"-tc-"* ]] && continue
+              [[ "$CACHE_KEY" == *"-dl-"* ]] && continue
+              gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete legacy cache $CACHE_ID"
+            done
 
           CURRENT_DL_KEYS=$(gh cache list --repo "$GH_REPO" --key "${WRT_CACHE_PREFIX}-dl-${KEY_SUFFIX}" --ref "$GITHUB_REF" --limit 100 --json key --jq '.[].key')
           if [ -n "$CURRENT_DL_KEYS" ]; then
@@ -904,19 +1087,28 @@ jobs:
           fi
 
       - name: Roll Rust Cache
-        # rust-mt5700-<lock_hash> 不在 WRT_CACHE_PREFIX 命名空间内，
-        # 不由上一步清理；这里只保留当前 Cargo.lock 哈希对应的那一代。
+        # rust-mt5700-<lock_hash>-<rustc_rel> 不在 WRT_CACHE_PREFIX 命名空间内，
+        # 不由上一步清理；这里只保留当前 Cargo.lock + rustc 对应的那一代。
+        # 加前置检查：当前精确 key 不存在时跳过，避免 Save Rust Cache
+        # 因 quota 失败后旧缓存被清空、下次无缓存可用。
         env:
           RUST_LOCK_HASH: ${{needs.core.outputs.rust_lock_hash}}
+          RUSTC_REL: ${{needs.core.outputs.rustc_rel}}
         run: |
           set -euo pipefail
           if [ -z "${RUST_LOCK_HASH:-}" ]; then
             echo "no rust_lock_hash output, skip rust cache rollover"
             exit 0
           fi
+          RUST_KEY="rust-mt5700-${RUST_LOCK_HASH}-${RUSTC_REL:-unknown}"
+          CURRENT_RUST_KEYS=$(gh cache list --repo "$GH_REPO" --key "$RUST_KEY" --limit 100 --json key --jq '.[].key')
+          if [ -z "$CURRENT_RUST_KEYS" ]; then
+            echo "当前 Rust 缓存（$RUST_KEY）不存在，跳过 rollover，避免清掉唯一可用的旧缓存"
+            exit 0
+          fi
           gh cache list --repo "$GH_REPO" --key "rust-mt5700-" --limit 100 --json id,key --jq '.[] | [.id, .key] | @tsv' |
             while IFS=$'\t' read -r CACHE_ID CACHE_KEY; do
               [ -n "$CACHE_ID" ] || continue
-              [[ "$CACHE_KEY" == *"${RUST_LOCK_HASH}"* ]] && continue
+              [[ "$CACHE_KEY" == "$RUST_KEY" ]] && continue
               gh cache delete "$CACHE_ID" --repo "$GH_REPO" || echo "warning: failed to delete rust cache $CACHE_ID"
             done
