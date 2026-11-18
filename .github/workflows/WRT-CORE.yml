@@ -14,19 +14,19 @@ on:
         required: true
         type: string
       WRT_NAME:
-        required: true
+        required: false        # ← 改：true → false（允许空值走 Settings.sh 兜底）
         type: string
       WRT_SSID:
-        required: true
+        required: false        # ← 改：true → false
         type: string
       WRT_WORD:
-        required: true
+        required: false        # ← 改：true → false
         type: string
       WRT_IP:
-        required: true
+        required: false        # ← 改：true → false
         type: string
       WRT_PW:
-        required: true
+        required: false        # ← 改：true → false
         type: string
       WRT_REPO:
         required: true
