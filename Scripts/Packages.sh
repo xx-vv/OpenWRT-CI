@@ -118,7 +118,7 @@ MT5700_REPO="xx-vv/luci-app-mt5700"
 UPDATE_PACKAGE "mt5700" "$MT5700_REPO" "main"
 #UPDATE_PACKAGE "mt5700m" "LianXia233/luci-app-mt5700m" "main"
 #UPDATE_PACKAGE "netmonitor" "LianXia233/luci-app-netmonitor" "main"
-#UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
+UPDATE_PACKAGE "qmodem-generic" "LianXia233/luci-app-qmodem-generic" "main"
 
 # ===== luci-app-mt5700 克隆结果校验 + 预编译注入 =====
 # 上游仓库结构调整、文件改名或漏推时在此尽早失败，避免数小时后才在编译阶段暴露。
