@@ -66,7 +66,7 @@ UPDATE_PACKAGE "diskmanager" "4IceG/luci-app-mini-diskmanager" "main"
 UPDATE_PACKAGE "easytier" "EasyTier/luci-app-easytier" "main"
 # QModem 与 MT5700 抢同一 AT 串口，且 TR3000.txt 里所有 qmodem 配置均已注释；
 # 不再克隆，省 clone 时间。如需恢复，取消下一行注释。
-#UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
+UPDATE_PACKAGE "qmodem" "FUjr/QModem" "main"
 UPDATE_PACKAGE "viking" "VIKINGYFY/packages" "main" "" "axonhub gecoosac miniupnpd sing-box luci-app-homeproxy luci-app-timewol luci-app-upnp luci-app-wolplus luci-app-wolultra"
 
 # ===== sing-box 过时补丁清理 =====
